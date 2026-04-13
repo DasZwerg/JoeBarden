@@ -32,8 +32,8 @@ token = os.getenv("DISCORD_TOKEN")
 _music_channel_raw = os.getenv("MUSIC_CHANNEL_ID", "").strip()
 MUSIC_CHANNEL_ID = int(_music_channel_raw) if _music_channel_raw else None
 _cookies_env = os.getenv("YTDL_COOKIES_PATH", "").strip()
-_cookies_default = os.path.join(os.path.dirname(__file__), "..", "cookies.txt")
-YTDL_COOKIES_PATH = _cookies_env if _cookies_env else os.path.normpath(_cookies_default) if os.path.isfile(_cookies_default) else None
+_cookies_default = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "cookies.txt"))
+YTDL_COOKIES_PATH = _cookies_env if _cookies_env else _cookies_default if os.path.isfile(_cookies_default) else None
 URL_RESOLVE_TIMEOUT_SECONDS = 8
 BOT_START_TIME = time.monotonic()
 
