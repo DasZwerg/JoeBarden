@@ -778,7 +778,7 @@ class Music(commands.Cog):
 
         Usage: $help
         """
-        prefix = "$"
+        prefix = "#"
         embed = (
             discord.Embed(
                 title="⚠️ BETA BUILD — Joe Barden Bot Command Center",
@@ -2037,7 +2037,7 @@ def random_guild_emoji(guild: Optional[discord.Guild]):
     return None
 
 
-bot = commands.Bot(command_prefix='$', description='Im Joe Barden and I approve this message.', intents=intents, help_command=None)
+bot = commands.Bot(command_prefix='#', description='Im Joe Barden and I approve this message.', intents=intents, help_command=None)
 
 @bot.event
 async def on_message(message):
