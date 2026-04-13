@@ -316,8 +316,10 @@ class YTDLSource(discord.PCMVolumeTransformer):
             'Accept-Language': 'en-US,en;q=0.9',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         },
-        # Use the tv_embedded player client — less scrutinized by YouTube bot detection
-        'extractor_args': {'youtube': {'player_client': ['tv_embedded', 'web_embedded']}},
+        # Let yt-dlp auto-select the player client based on cookie presence.
+        # With cookies: uses tv_downgraded,web_safari (handles age-restricted content).
+        # Without cookies: ios bypasses age-restriction better than the web clients.
+        'extractor_args': {'youtube': {'player_client': ['ios', 'web']}},
         # Small random delay between requests to avoid machine-speed fingerprinting
         'sleep_interval': 1,
         'max_sleep_interval': 3,
