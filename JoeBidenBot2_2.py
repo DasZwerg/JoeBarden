@@ -34,6 +34,10 @@ MUSIC_CHANNEL_ID = int(_music_channel_raw) if _music_channel_raw else None
 _cookies_env = os.getenv("YTDL_COOKIES_PATH", "").strip()
 _cookies_default = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt"))
 YTDL_COOKIES_PATH = _cookies_env if _cookies_env else _cookies_default if os.path.isfile(_cookies_default) else None
+if YTDL_COOKIES_PATH:
+    print(f"[Cookie] Loaded cookie file: {YTDL_COOKIES_PATH}")
+else:
+    print(f"[Cookie] WARNING: No cookie file found. Age-restricted content will fail. Set YTDL_COOKIES_PATH in .env or place cookies.txt at: {_cookies_default}")
 URL_RESOLVE_TIMEOUT_SECONDS = 8
 BOT_START_TIME = time.monotonic()
 
@@ -310,6 +314,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
         'noplaylist': True,
         'quiet': True,
         'default_search': 'ytsearch',
+        'extractor_args': {'youtube': {'player_client': ['web_embedded', 'android_vr', 'default']}},
         # Impersonate a real browser to reduce bot detection
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
