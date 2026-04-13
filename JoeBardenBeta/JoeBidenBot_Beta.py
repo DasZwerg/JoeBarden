@@ -761,9 +761,20 @@ class Music(commands.Cog):
         prefix = "$"
         embed = (
             discord.Embed(
-                title="Joe Barden Bot Command Center",
-                description="Use the commands below in the configured music channel.",
-                color=discord.Color.blurple(),
+                title="⚠️ BETA BUILD — Joe Barden Bot Command Center",
+                description=(
+                    "```\n"
+                    "██████╗ ███████╗████████╗ █████╗ \n"
+                    "██╔══██╗██╔════╝╚══██╔══╝██╔══██╗\n"
+                    "██████╔╝█████╗     ██║   ███████║\n"
+                    "██╔══██╗██╔══╝     ██║   ██╔══██║\n"
+                    "██████╔╝███████╗   ██║   ██║  ██║\n"
+                    "╚═════╝ ╚══════╝   ╚═╝   ╚═╝  ╚═╝\n"
+                    "```\n"
+                    "⚠️ **This is a BETA version. Expect bugs. AI features are disabled.**\n"
+                    "Use the commands below in the configured music channel."
+                ),
+                color=discord.Color.orange(),
             )
             .add_field(
                 name="Music",
@@ -819,17 +830,6 @@ class Music(commands.Cog):
                 inline=False,
             )
             .add_field(
-                name="🤖 AI Assistant",
-                value=(
-                    f"`{prefix}ask <question>` Ask AI anything\n"
-                    f"`{prefix}dj <request>` AI music recommendations\n"
-                    f"`{prefix}chat` Start private AI conversation\n"
-                    f"`{prefix}aistats` Check AI usage limits\n\n"
-                    f"⚠️ **Please use AI responsibly** - I pay for each request!"
-                ),
-                inline=False,
-            )
-            .add_field(
                 name="Community and Utility",
                 value=(
                     f"`{prefix}usage` Simple how-to guide\n"
@@ -842,7 +842,7 @@ class Music(commands.Cog):
                 ),
                 inline=False,
             )
-            .set_footer(text="Tip: You can still run $help <command> style by asking for specifics in chat.")
+            .set_footer(text="⚠️ BETA BUILD — AI features are disabled in this version.")
         )
 
         await ctx.send(embed=embed)
