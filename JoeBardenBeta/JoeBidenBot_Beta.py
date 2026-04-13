@@ -5,6 +5,7 @@
 #Copyright LPSC LLC.
 
 import os
+import shutil
 import asyncio
 import functools
 import itertools
@@ -27,6 +28,13 @@ import google.genai as genai
 
 intents = discord.Intents.all()
 load_dotenv()
+
+# Ensure common JS runtime binary locations are in PATH so yt-dlp can find node
+# even when launched as a non-interactive service (systemd, screen, etc.)
+_extra_paths = ['/usr/bin', '/usr/local/bin', '/usr/local/sbin']
+os.environ['PATH'] = os.pathsep.join(
+    _extra_paths + [p for p in os.environ.get('PATH', '').split(os.pathsep) if p not in _extra_paths]
+)
 
 token = os.getenv("DISCORD_TOKEN")
 _music_channel_raw = os.getenv("MUSIC_CHANNEL_ID", "").strip()
@@ -315,6 +323,9 @@ class YTDLSource(discord.PCMVolumeTransformer):
         'quiet': True,
         'default_search': 'ytsearch',
         'extractor_args': {'youtube': {'player_client': ['web', 'default']}},
+        'js_runtimes': {k: {} for k in ['node', 'bun', 'deno', 'quickjs'] if shutil.which(k)},
+        'remote_components': set(),
+        'compat_opts': set(),
         # Impersonate a real browser to reduce bot detection
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
