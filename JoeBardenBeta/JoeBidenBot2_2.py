@@ -23,7 +23,7 @@ import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 from yt_dlp.utils import DownloadError
-import google.generativeai as genai
+import google.genai as genai
 
 intents = discord.Intents.all()
 load_dotenv()
@@ -34,14 +34,118 @@ MUSIC_CHANNEL_ID = int(_music_channel_raw) if _music_channel_raw else None
 URL_RESOLVE_TIMEOUT_SECONDS = 8
 BOT_START_TIME = time.monotonic()
 
+def get_best_available_model(client) -> Optional[str]:
+    """Dynamically discover and select the best available Gemini model.
+    
+    Prioritizes models in order of preference (cheapest/most efficient first):
+    1. gemini-2.5-flash (current, efficient)
+    2. gemini-1.5-flash (fallback)
+    3. gemini-1.5-pro (higher quality)
+    4. gemini-2.0-flash (if still available)
+    
+    Returns the first model that supports generateContent, or None if none found.
+    """
+    # Preferred models in order (cheapest/most efficient first)
+    preferred_models = [
+        "gemini-2.5-flash",
+        "gemini-1.5-flash", 
+        "gemini-1.5-pro",
+        "gemini-2.0-flash"
+    ]
+    
+    print("🔍 Discovering available Gemini models...")
+    
+    try:
+        # Get list of available models
+        models = client.models.list()
+        available_models = []
+        
+        for model in models:
+            if hasattr(model, 'supported_actions') and 'generateContent' in model.supported_actions:
+                model_name = model.name.split('/')[-1]  # Extract model name from full path
+                available_models.append(model_name)
+                print(f"✅ Found model: {model_name}")
+        
+        print(f"📋 Total models supporting generateContent: {len(available_models)}")
+        
+        # Find the best available model from our preferred list
+        for preferred in preferred_models:
+            if preferred in available_models:
+                print(f"🎯 Selected model: {preferred}")
+                return preferred
+        
+        # If none of preferred models found, use first available
+        if available_models:
+            fallback = available_models[0]
+            print(f"⚠️  Using fallback model: {fallback}")
+            return fallback
+            
+        print("❌ No models found that support generateContent")
+        return None
+        
+    except Exception as e:
+        print(f"❌ Error discovering models: {e}")
+        # Fallback to hardcoded model if discovery fails
+        print("🔄 Using fallback model: gemini-2.5-flash")
+        return "gemini-2.5-flash"
+
 # Initialize Gemini AI
 gemini_api_key = os.getenv("GEMINI_API_KEY")
 if gemini_api_key:
-    genai.configure(api_key=gemini_api_key)
-    gemini_model = genai.GenerativeModel('gemini-pro')
+    client = genai.Client(api_key=gemini_api_key)
+    gemini_model = get_best_available_model(client)
+    available_models = []  # Store for fallback retries
+    
+    # Store available models for runtime fallback
+    try:
+        models = client.models.list()
+        for model in models:
+            if hasattr(model, 'supported_actions') and 'generateContent' in model.supported_actions:
+                model_name = model.name.split('/')[-1]
+                available_models.append(model_name)
+    except Exception:
+        pass  # Fallback will work even if this fails
 else:
+    client = None
     gemini_model = None
+    available_models = []
     print("Warning: GEMINI_API_KEY not found in .env file")
+
+def generate_content_with_fallback(contents: str) -> str:
+    """Generate content with automatic model fallback on failure.
+    
+    Tries the current model first, then falls back to other available models
+    if the current one fails with 404 or similar errors.
+    """
+    if not client or not gemini_model:
+        raise Exception("Gemini client not initialized")
+    
+    # Models to try in order (current first, then others)
+    models_to_try = [gemini_model] + [m for m in available_models if m != gemini_model]
+    
+    last_error = None
+    for model_name in models_to_try:
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents
+            )
+            return response.text if hasattr(response, 'text') else str(response)
+        except Exception as error:
+            last_error = error
+            error_msg = str(error).lower()
+            
+            # If it's a 404 or model not found error, try next model
+            if any(keyword in error_msg for keyword in ['404', 'not found', 'no longer available']):
+                print(f"⚠️  Model {model_name} failed: {error}")
+                print(f"🔄 Trying next model...")
+                continue
+            else:
+                # For other errors, don't retry - they might be rate limits or other issues
+                raise error
+    
+    # If all models failed, raise the last error
+    raise last_error or Exception("All available models failed")
 
 # AI usage tracking
 AI_USAGE = {}
@@ -394,7 +498,11 @@ class VoiceState:
         self.slowmo = False
         self.vaporwave = False
         self.reverse = False
-        self.robot = False
+        self.bass = False
+        self.lofi = False
+        self.echo = False
+        self.tremolo = False
+        self.fadein = False
         self.songs_played = 0
         self._ffmpeg_process: Optional[asyncio.subprocess.Process] = None
         self._cleanup_lock = asyncio.Lock()
@@ -460,11 +568,35 @@ class VoiceState:
             self.skip_votes.clear()
             channel = self.current.source.channel
             source_metadata = self.current.source
-            stream_url = source_metadata.stream_url or source_metadata.data.get('url')
+
+            # Fix A: Re-resolve a fresh stream URL at play time to avoid stale/expired YouTube URLs.
+            stream_url = None
+            webpage_url = source_metadata.url
+            if webpage_url:
+                try:
+                    loop = asyncio.get_running_loop()
+                    partial = functools.partial(
+                        YTDLSource.ytdl.extract_info,
+                        webpage_url,
+                        download=False
+                    )
+                    fresh_data = await loop.run_in_executor(None, partial)
+                    if isinstance(fresh_data, dict) and 'entries' in fresh_data:
+                        entries = fresh_data.get('entries') or []
+                        fresh_data = next((e for e in entries if isinstance(e, dict)), None)
+                    if isinstance(fresh_data, dict):
+                        stream_url = fresh_data.get('url')
+                except Exception as resolve_exc:
+                    print(f"[Beta] Stream URL re-resolve failed, falling back to cached URL: {resolve_exc}")
+
+            if not stream_url:
+                stream_url = source_metadata.stream_url or source_metadata.data.get('url')
             if not stream_url:
                 await self._send_player_error(channel, "No playable stream URL was returned for this track.")
                 continue
 
+            # Fix B: Use a flag so exception paths don't skip self.next.wait(), preventing queue desync.
+            played = False
             try:
                 # Re-create FFmpeg source at play time to reduce stale/expired stream issues.
                 ffmpeg_options = dict(YTDLSource.FFMPEG_OPTIONS)
@@ -473,48 +605,52 @@ class VoiceState:
                 if self.nightcore:
                     ffmpeg_options["options"] = "-vn -b:a 192k -af asetrate=48000*1.15,aresample=48000"
                 elif self.slowmo:
-                    ffmpeg_options["options"] = "-vn -b:a 192k -af asetrate=48000*0.85,aresample=48000"
+                    ffmpeg_options["options"] = "-vn -b:a 192k -af atempo=0.85"
                 elif self.vaporwave:
-                    ffmpeg_options["options"] = "-vn -b:a 192k -af asetrate=48000*0.8,aresample=48000,aecho=0.8:0.9:1000|1800"
+                    ffmpeg_options["options"] = "-vn -b:a 192k -af asetrate=48000*0.8,aresample=48000,aecho=0.8:0.9:1000|1800:0.9|0.9"
                 elif self.reverse:
                     ffmpeg_options["options"] = "-vn -b:a 192k -af areverse"
-                elif self.robot:
-                    ffmpeg_options["options"] = "-vn -b:a 192k -af afftdn=nr=25:nf=-25,acompressor"
-                
-                # Create a custom FFmpeg source with better error handling
-                source = discord.FFmpegPCMAudio(stream_url, **ffmpeg_options)
-                playback_source = discord.PCMVolumeTransformer(source, volume=self._volume)
-                
+                elif self.bass:
+                    ffmpeg_options["options"] = "-vn -b:a 192k -af bass=g=15"
+                elif self.lofi:
+                    ffmpeg_options["options"] = "-vn -b:a 192k -af acrusher=level_in=1:level_out=1:bits=8:mode=log"
+                elif self.echo:
+                    ffmpeg_options["options"] = "-vn -b:a 192k -af aecho=0.8:0.5:1000|2000|3000:0.5|0.3|0.2"
+                elif self.tremolo:
+                    ffmpeg_options["options"] = "-vn -b:a 192k -af apulsator=mode=sine:hz=2"
+                elif self.fadein:
+                    ffmpeg_options["options"] = "-vn -b:a 192k -af afade=t=in:st=0:d=3"
+
                 if not self.voice:
                     await self._send_player_error(channel, "Voice connection dropped before playback started.")
-                    continue
-                    
-                # Store the ffmpeg process reference for cleanup
-                self._ffmpeg_process = getattr(source, '_process', None)
-                
-                self.voice.play(playback_source, after=self.play_next_song)
-                self.current_started_at = time.monotonic()
-                self.songs_played += 1
-                self.history.append(self.current)
-                if len(self.history) > self.history_limit:
-                    self.history.pop(0)
-                await channel.send(embed=self.current.create_embed())
-                
+                else:
+                    source = discord.FFmpegPCMAudio(stream_url, **ffmpeg_options)
+                    playback_source = discord.PCMVolumeTransformer(source, volume=self._volume)
+
+                    # Store the ffmpeg process reference for cleanup
+                    self._ffmpeg_process = getattr(source, '_process', None)
+
+                    self.voice.play(playback_source, after=self.play_next_song)
+                    self.current_started_at = time.monotonic()
+                    self.songs_played += 1
+                    self.history.append(self.current)
+                    if len(self.history) > self.history_limit:
+                        self.history.pop(0)
+                    await channel.send(embed=self.current.create_embed())
+                    played = True
+
             except FileNotFoundError:
                 await self._send_player_error(channel, "ffmpeg is not installed or not in PATH.")
-                continue
             except discord.ClientException as exc:
                 await self._send_player_error(channel, f"Audio playback failed: {exc}")
-                continue
             except Exception as exc:
                 await self._send_player_error(channel, f"Unexpected playback failure: {exc}")
-                continue
 
-            await self.next.wait()
-
-            if self._playback_error:
-                await self._send_player_error(channel, f"Track playback error: {self._playback_error}")
-                self._playback_error = None
+            if played:
+                await self.next.wait()
+                if self._playback_error:
+                    await self._send_player_error(channel, f"Track playback error: {self._playback_error}")
+                    self._playback_error = None
 
 
 
@@ -625,7 +761,7 @@ class Music(commands.Cog):
         prefix = "$"
         embed = (
             discord.Embed(
-                title="Joe Biden Bot Command Center",
+                title="Joe Barden Bot Command Center",
                 description="Use the commands below in the configured music channel.",
                 color=discord.Color.blurple(),
             )
@@ -663,7 +799,11 @@ class Music(commands.Cog):
                     f"`{prefix}slowmo on|off` Slow down music\n"
                     f"`{prefix}vaporwave on|off` Aesthetic effect\n"
                     f"`{prefix}reverse on|off` Play backwards\n"
-                    f"`{prefix}robot on|off` Robot voice"
+                    f"`{prefix}bass on|off` Heavy bass boost\n"
+                    f"`{prefix}lofi on|off` Crunchy vintage sound\n"
+                    f"`{prefix}echo on|off` Triple echo chamber\n"
+                    f"`{prefix}tremolo on|off` Pulsing effect\n"
+                    f"`{prefix}fadein on|off` Smooth fade-in"
                 ),
                 inline=False,
             )
@@ -684,7 +824,8 @@ class Music(commands.Cog):
                     f"`{prefix}ask <question>` Ask AI anything\n"
                     f"`{prefix}dj <request>` AI music recommendations\n"
                     f"`{prefix}chat` Start private AI conversation\n"
-                    f"`{prefix}aistats` Check AI usage limits"
+                    f"`{prefix}aistats` Check AI usage limits\n\n"
+                    f"⚠️ **Please use AI responsibly** - I pay for each request!"
                 ),
                 inline=False,
             )
@@ -1032,8 +1173,7 @@ class Music(commands.Cog):
         ctx.voice_state.slowmo = False
         ctx.voice_state.vaporwave = False
         ctx.voice_state.reverse = False
-        ctx.voice_state.robot = False
-        
+                
         ctx.voice_state.nightcore = mode_normalized == "on"
         state = "enabled" if ctx.voice_state.nightcore else "disabled"
         await ctx.send(f"🎵 Nightcore is now {state}!")
@@ -1053,8 +1193,7 @@ class Music(commands.Cog):
         ctx.voice_state.nightcore = False
         ctx.voice_state.vaporwave = False
         ctx.voice_state.reverse = False
-        ctx.voice_state.robot = False
-        
+                
         ctx.voice_state.slowmo = mode_normalized == "on"
         state = "enabled" if ctx.voice_state.slowmo else "disabled"
         await ctx.send(f"🐌 Slow-mo is now {state}!")
@@ -1074,8 +1213,7 @@ class Music(commands.Cog):
         ctx.voice_state.nightcore = False
         ctx.voice_state.slowmo = False
         ctx.voice_state.reverse = False
-        ctx.voice_state.robot = False
-        
+                
         ctx.voice_state.vaporwave = mode_normalized == "on"
         state = "enabled" if ctx.voice_state.vaporwave else "disabled"
         await ctx.send(f"🌊 Vaporwave is now {state}!")
@@ -1092,36 +1230,166 @@ class Music(commands.Cog):
             return await ctx.send("Usage: $reverse on|off")
         
         # Reset all other effects
-        ctx.voice_state.nightcore = False
         ctx.voice_state.slowmo = False
         ctx.voice_state.vaporwave = False
-        ctx.voice_state.robot = False
+        ctx.voice_state.reverse = False
+        ctx.voice_state.bass = False
+        ctx.voice_state.lofi = False
+        ctx.voice_state.echo = False
+        ctx.voice_state.tremolo = False
+        ctx.voice_state.fadein = False
         
         ctx.voice_state.reverse = mode_normalized == "on"
         state = "enabled" if ctx.voice_state.reverse else "disabled"
         await ctx.send(f"⏪ Reverse is now {state}!")
 
-    @commands.command(name='robot')
-    async def _robot(self, ctx: commands.Context, mode: str):
-        """Toggle robot voice effect for upcoming tracks.
+    @commands.command(name='bass')
+    async def _bass(self, ctx: commands.Context, mode: str):
+        """Toggle bass boost effect for upcoming tracks.
 
-        Usage: $robot on
-        Usage: $robot off
+        Usage: $bass on
+        Usage: $bass off
         """
         mode_normalized = mode.strip().lower()
         if mode_normalized not in {"on", "off"}:
-            return await ctx.send("Usage: $robot on|off")
+            return await ctx.send("Usage: $bass on|off")
         
         # Reset all other effects
         ctx.voice_state.nightcore = False
         ctx.voice_state.slowmo = False
         ctx.voice_state.vaporwave = False
         ctx.voice_state.reverse = False
+        ctx.voice_state.bass = False
+        ctx.voice_state.lofi = False
+        ctx.voice_state.echo = False
+        ctx.voice_state.tremolo = False
+        ctx.voice_state.fadein = False
         
-        ctx.voice_state.robot = mode_normalized == "on"
-        state = "enabled" if ctx.voice_state.robot else "disabled"
-        await ctx.send(f"🤖 Robot voice is now {state}!")
+        ctx.voice_state.bass = mode_normalized == "on"
+        state = "enabled" if ctx.voice_state.bass else "disabled"
+        await ctx.send(f"🔊 Bass boost is now {state}!")
 
+    @commands.command(name='lofi')
+    async def _lofi(self, ctx: commands.Context, mode: str):
+        """Toggle lo-fi effect for upcoming tracks.
+
+        Usage: $lofi on
+        Usage: $lofi off
+        """
+        mode_normalized = mode.strip().lower()
+        if mode_normalized not in {"on", "off"}:
+            return await ctx.send("Usage: $lofi on|off")
+        
+        # Reset all other effects
+        ctx.voice_state.slowmo = False
+        ctx.voice_state.vaporwave = False
+        ctx.voice_state.reverse = False
+        ctx.voice_state.bass = False
+        ctx.voice_state.lofi = False
+        ctx.voice_state.echo = False
+        ctx.voice_state.tremolo = False
+        ctx.voice_state.fadein = False
+        ctx.voice_state.reverse = False
+        ctx.voice_state.bass = False
+        ctx.voice_state.echo = False
+        ctx.voice_state.tremolo = False
+        ctx.voice_state.fadein = False
+        
+        ctx.voice_state.lofi = mode_normalized == "on"
+        state = "enabled" if ctx.voice_state.lofi else "disabled"
+        await ctx.send(f"📻 Lo-fi is now {state}!")
+
+    @commands.command(name='echo')
+    async def _echo(self, ctx: commands.Context, mode: str):
+        """Toggle echo chamber effect for upcoming tracks.
+
+        Usage: $echo on
+        Usage: $echo off
+        """
+        mode_normalized = mode.strip().lower()
+        if mode_normalized not in {"on", "off"}:
+            return await ctx.send("Usage: $echo on|off")
+        
+        # Reset all other effects
+        ctx.voice_state.slowmo = False
+        ctx.voice_state.vaporwave = False
+        ctx.voice_state.reverse = False
+        ctx.voice_state.bass = False
+        ctx.voice_state.lofi = False
+        ctx.voice_state.echo = False
+        ctx.voice_state.tremolo = False
+        ctx.voice_state.fadein = False
+        ctx.voice_state.reverse = False
+        ctx.voice_state.bass = False
+        ctx.voice_state.lofi = False
+        ctx.voice_state.tremolo = False
+        ctx.voice_state.fadein = False
+        
+        ctx.voice_state.echo = mode_normalized == "on"
+        state = "enabled" if ctx.voice_state.echo else "disabled"
+        await ctx.send(f"🔊 Echo is now {state}!")
+
+    @commands.command(name='tremolo')
+    async def _tremolo(self, ctx: commands.Context, mode: str):
+        """Toggle tremolo/pulsing effect for upcoming tracks.
+
+        Usage: $tremolo on
+        Usage: $tremolo off
+        """
+        mode_normalized = mode.strip().lower()
+        if mode_normalized not in {"on", "off"}:
+            return await ctx.send("Usage: $tremolo on|off")
+        
+        # Reset all other effects
+        ctx.voice_state.slowmo = False
+        ctx.voice_state.vaporwave = False
+        ctx.voice_state.reverse = False
+        ctx.voice_state.bass = False
+        ctx.voice_state.lofi = False
+        ctx.voice_state.echo = False
+        ctx.voice_state.tremolo = False
+        ctx.voice_state.fadein = False
+        ctx.voice_state.reverse = False
+        ctx.voice_state.bass = False
+        ctx.voice_state.lofi = False
+        ctx.voice_state.echo = False
+        ctx.voice_state.fadein = False
+        
+        ctx.voice_state.tremolo = mode_normalized == "on"
+        state = "enabled" if ctx.voice_state.tremolo else "disabled"
+        await ctx.send(f"🌊 Tremolo is now {state}!")
+
+    @commands.command(name='fadein')
+    async def _fadein(self, ctx: commands.Context, mode: str):
+        """Toggle fade-in effect for upcoming tracks.
+
+        Usage: $fadein on
+        Usage: $fadein off
+        """
+        mode_normalized = mode.strip().lower()
+        if mode_normalized not in {"on", "off"}:
+            return await ctx.send("Usage: $fadein on|off")
+        
+        # Reset all other effects
+        ctx.voice_state.slowmo = False
+        ctx.voice_state.vaporwave = False
+        ctx.voice_state.reverse = False
+        ctx.voice_state.bass = False
+        ctx.voice_state.lofi = False
+        ctx.voice_state.echo = False
+        ctx.voice_state.tremolo = False
+        ctx.voice_state.fadein = False
+        ctx.voice_state.reverse = False
+        ctx.voice_state.bass = False
+        ctx.voice_state.lofi = False
+        ctx.voice_state.echo = False
+        ctx.voice_state.tremolo = False
+        
+        ctx.voice_state.fadein = mode_normalized == "on"
+        state = "enabled" if ctx.voice_state.fadein else "disabled"
+        await ctx.send(f"🎵 Fade-in is now {state}!")
+
+    
     @commands.command(name='effects')
     async def _effects(self, ctx: commands.Context):
         """Show available audio effects and current status.
@@ -1144,9 +1412,17 @@ class Music(commands.Cog):
             active_effects.append("🌊 Vaporwave (aesthetic)")
         if ctx.voice_state.reverse:
             active_effects.append("⏪ Reverse (backwards)")
-        if ctx.voice_state.robot:
-            active_effects.append("🤖 Robot (mechanical)")
-        
+        if ctx.voice_state.bass:
+            active_effects.append("🔊 Bass Boost (heavy bass)")
+        if ctx.voice_state.lofi:
+            active_effects.append("📻 Lo-Fi (crunchy vintage)")
+        if ctx.voice_state.echo:
+            active_effects.append("🔊 Echo Chamber (triple echo)")
+        if ctx.voice_state.tremolo:
+            active_effects.append("🌊 Tremolo (pulsing effect)")
+        if ctx.voice_state.fadein:
+            active_effects.append("🎵 Fade-In (smooth start)")
+                
         if not active_effects:
             status = "🎵 No effects active"
         else:
@@ -1162,7 +1438,11 @@ class Music(commands.Cog):
                 "**$slowmo on/off** - Slow down music (15% slower)\n"
                 "**$vaporwave on/off** - Aesthetic slowed + echo\n"
                 "**$reverse on/off** - Play music backwards\n"
-                "**$robot on/off** - Mechanical voice effect"
+                "**$bass on/off** - Heavy bass boost\n"
+                "**$lofi on/off** - Crunchy vintage sound\n"
+                "**$echo on/off** - Triple echo chamber\n"
+                "**$tremolo on/off** - Pulsing tremolo effect\n"
+                "**$fadein on/off** - Smooth fade-in start"
             ),
             inline=False
         )
@@ -1408,7 +1688,7 @@ class Music(commands.Cog):
         Usage: $usage
         """
         embed = discord.Embed(
-            title="🎵 How to Use Joe Biden Bot",
+            title="🎵 How to Use Joe Barden Bot",
             description="Simple music bot commands everyone can use!",
             color=discord.Color.blue()
         )
@@ -1443,7 +1723,11 @@ class Music(commands.Cog):
                 "**$slowmo on** - Slow down music (chill vibes)\n"
                 "**$vaporwave on** - Aesthetic slowed + echo\n"
                 "**$reverse on** - Play music backwards!\n"
-                "**$robot on** - Mechanical robot voice"
+                "**$bass on** - Heavy bass boost!\n"
+                "**$lofi on** - Crunchy vintage sound!\n"
+                "**$echo on** - Triple echo chamber!\n"
+                "**$tremolo on** - Pulsing tremolo effect!\n"
+                "**$fadein on** - Smooth fade-in start!"
             ),
             inline=False
         )
@@ -1525,8 +1809,16 @@ class Music(commands.Cog):
                 context += "Audio effect: Vaporwave (aesthetic)\n"
             elif ctx.voice_state.reverse:
                 context += "Audio effect: Reverse (backwards)\n"
-            elif ctx.voice_state.robot:
-                context += "Audio effect: Robot voice\n"
+            elif ctx.voice_state.bass:
+                context += "Audio effect: Bass Boost (heavy bass)\n"
+            elif ctx.voice_state.lofi:
+                context += "Audio effect: Lo-Fi (crunchy vintage)\n"
+            elif ctx.voice_state.echo:
+                context += "Audio effect: Echo Chamber (triple echo)\n"
+            elif ctx.voice_state.tremolo:
+                context += "Audio effect: Tremolo (pulsing effect)\n"
+            elif ctx.voice_state.fadein:
+                context += "Audio effect: Fade-In (smooth start)\n"
         
         return context
 
@@ -1553,11 +1845,10 @@ class Music(commands.Cog):
             else:
                 enhanced_question = question
             
-            response = gemini_model.generate_content(enhanced_question)
+            response_text = generate_content_with_fallback(enhanced_question)
             self._track_ai_usage(ctx.author.id)
             
             # Split long responses to meet Discord's 2000 character limit
-            response_text = response.text
             if len(response_text) <= 1900:
                 await ctx.send(f"🤖 **AI says:**\n{response_text}")
             else:
@@ -1636,10 +1927,8 @@ User request: {request}
 Provide helpful music suggestions, explain music concepts, or help with music-related questions. 
 Be friendly, knowledgeable, and concise. If suggesting songs, explain why they fit the mood/occasion."""
             
-            response = gemini_model.generate_content(dj_prompt)
+            response_text = generate_content_with_fallback(dj_prompt)
             self._track_ai_usage(ctx.author.id)
-            
-            response_text = response.text
             if len(response_text) <= 1900:
                 await ctx.send(f"🎵 **DJ AI says:**\n{response_text}")
             else:
@@ -1728,7 +2017,7 @@ def random_guild_emoji(guild: Optional[discord.Guild]):
     return None
 
 
-bot = commands.Bot(command_prefix='$', description='Im Joe Biden and I approve this message.', intents=intents, help_command=None)
+bot = commands.Bot(command_prefix='$', description='Im Joe Barden and I approve this message.', intents=intents, help_command=None)
 
 @bot.event
 async def on_message(message):
@@ -1753,11 +2042,8 @@ async def on_message(message):
                 
                 await message.send("🤔 Thinking...")
                 
-                response = gemini_model.generate_content(message.content)
+                response_text = generate_content_with_fallback(message.content)
                 music_cog._track_ai_usage(message.author.id)
-                
-                # Split long responses
-                response_text = response.text
                 if len(response_text) <= 1900:
                     await message.send(f"🤖 {response_text}")
                 else:

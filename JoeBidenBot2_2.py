@@ -741,7 +741,7 @@ class Music(commands.Cog):
         prefix = "$"
         embed = (
             discord.Embed(
-                title="Joe Biden Bot Command Center",
+                title="Joe Barden Bot Command Center",
                 description="Use the commands below in the configured music channel.",
                 color=discord.Color.blurple(),
             )
@@ -1668,7 +1668,7 @@ class Music(commands.Cog):
         Usage: $usage
         """
         embed = discord.Embed(
-            title="🎵 How to Use Joe Biden Bot",
+            title="🎵 How to Use Joe Barden Bot",
             description="Simple music bot commands everyone can use!",
             color=discord.Color.blue()
         )
@@ -1997,7 +1997,7 @@ def random_guild_emoji(guild: Optional[discord.Guild]):
     return None
 
 
-bot = commands.Bot(command_prefix='$', description='Im Joe Biden and I approve this message.', intents=intents, help_command=None)
+bot = commands.Bot(command_prefix='$', description='Im Joe Barden and I approve this message.', intents=intents, help_command=None)
 
 @bot.event
 async def on_message(message):

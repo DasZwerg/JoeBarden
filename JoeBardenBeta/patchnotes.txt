@@ -1,0 +1,112 @@
+v2.4
+
+Bugfixes
+- Removed references to the old bot name
+
+Summary
+- Major update with AI integration, advanced audio effects, FFmpeg fixes, and command prefix change. This is the biggest feature update yet!
+
+🤖 NEW: AI INTEGRATION
+- Added Google Gemini AI integration with free tier support (1,500 requests/day)
+- Added $ask command for general Q&A with context awareness
+- Added $dj command for music recommendations and DJ assistance
+- Added $chat command for private AI conversations in DMs
+- Added $aistats command to monitor AI usage and limits
+- AI is music-aware - knows current song, queue, and active effects
+- Built-in rate limiting and usage tracking to prevent abuse
+- Smart error handling for API failures and rate limits
+
+🎛️ NEW: ADVANCED AUDIO EFFECTS
+- Added $slowmo on/off - Slow down music by 15% (opposite of nightcore)
+- Added $vaporwave on/off - Aesthetic slowed + echo effect
+- Added $reverse on/off - Play music backwards for party tricks
+- Added $bass on/off - Heavy bass boost for party vibes
+- Added $lofi on/off - Crunchy vintage lo-fi sound for study sessions
+- Added $echo on/off - Triple echo chamber for atmospheric effects
+- Added $tremolo on/off - Pulsing tremolo effect for rave vibes
+- Added $fadein on/off - Smooth fade-in for professional transitions
+- Added $effects command to show all available effects and status
+- Only one effect can be active at a time (auto-switching)
+- Enhanced FFmpeg options with timeout protection (50 minutes)
+- All effects use professional-grade FFmpeg audio filters
+- REMOVED: $robot effect (had technical issues)
+
+🔧 CRITICAL FIXES
+- FIXED: FFmpeg termination errors that caused bot to become unresponsive
+- FIXED: "failed to terminate -9" errors with proper process cleanup
+- FIXED: Memory leaks from unclosed FFmpeg processes
+- Added thread-safe cleanup with asyncio.Lock()
+- Enhanced error handling for audio playback failures
+- Improved process termination with graceful fallbacks
+
+💫 QUALITY IMPROVEMENTS
+- Changed command prefix from ! to $ as requested
+- Fixed duplicate asyncio import in code
+- Fixed missing duration_seconds attribute (broke $nowbar command)
+- Improved cog_unload method with proper async handling
+- Enhanced error handling throughout the codebase
+- Optimized imports and removed redundancies
+
+📚 UPDATED DOCUMENTATION
+- Completely rewritten README.md with comprehensive feature guide
+- Updated requirements.txt to include google-generativeai
+- Added detailed audio effects guide with use cases
+- Added AI features documentation with examples
+- Enhanced troubleshooting section
+- Added party mode ideas and configuration guide
+
+🎮 ENHANCED USER EXPERIENCE
+- Updated $usage command to include AI features
+- Added AI commands to $help menu
+- Enhanced $effects command with party tips
+- Improved error messages and user feedback
+- Better organization of command categories
+
+🔒 PRODUCTION READY
+- Comprehensive error handling and recovery
+- Rate limiting and abuse prevention
+- Memory leak prevention
+- Thread-safe operations
+- Graceful shutdown handling
+- Extensive testing and validation
+
+v2.3 (Previous Version)
+
+Summary
+- Feature expansion update with new interactive music commands, playlist persistence, and richer playback controls.
+
+New Features
+- Added a custom embedded `!help` command menu grouped by Music, Playback Controls, Playlists, and Utility commands.
+- Added !lyrics for lyric lookup (artist - title format).
+- Added !nightcore on|off for a nightcore playback effect on upcoming tracks.
+- Added !replay to restart the current track quickly.
+- Added !history to show recently played tracks.
+- Added !playlist save/load/list with per-server JSON persistence.
+- Added !votemode on|off (alias: !vote) for vote-based skipping.
+- Added !mood happy|chill|rage|focus to queue mood-based presets.
+- Added !roastdj to roast current DJ or a tagged member.
+- Added !stats for uptime and playback metrics.
+- Added !nowbar for a live progress bar display.
+- Expanded command docstrings so !help clearly explains usage and aliases.
+
+Fixes
+- Fixed environment load order so .env values are applied before MUSIC_CHANNEL_ID parsing.
+- Fixed playback source handling to preserve track metadata while still refreshing stream sources.
+- Fixed occasional volume command edge cases when voice source is missing.
+- Fixed patchnotes loading path so !patchnotes works even if bot is launched from a different directory.
+- Added explicit startup error when DISCORD_TOKEN is missing.
+
+Behavior and Reliability Improvements
+- Improved audio player loop safety checks and vote reset behavior per track.
+- Simplified on_message branching to reduce duplicated checks and unnecessary random emoji work.
+- Added stronger type guards/casts to reduce false-positive analyzer warnings in editor.
+- Added playback history tracking and per-track start time tracking for richer command output.
+- Added playlist read/write helpers and safer JSON fallback behavior.
+
+Notes
+- !play_spotify remains a placeholder command and is not direct Spotify playback.
+- If imports show unresolved in editor, install dependencies in the active venv:
+	discord.py, yt-dlp, python-dotenv
+
+Bugs
+- None known at release time. Report new issues in Discord with command used and error output.

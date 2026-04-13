@@ -1,5 +1,8 @@
 v2.4
 
+Bugfixes
+- Removed references to the old bot name
+
 Summary
 - Major update with AI integration, advanced audio effects, FFmpeg fixes, and command prefix change. This is the biggest feature update yet!
 
