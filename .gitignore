@@ -134,6 +134,9 @@ celerybeat.pid
 # SageMath parsed files
 *.sage.py
 
+# Cookie files (contains sensitive YouTube session credentials)
+cookies.txt
+
 # Environments
 .env
 .envrc

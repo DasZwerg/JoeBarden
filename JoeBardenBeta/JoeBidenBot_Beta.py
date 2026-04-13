@@ -31,6 +31,9 @@ load_dotenv()
 token = os.getenv("DISCORD_TOKEN")
 _music_channel_raw = os.getenv("MUSIC_CHANNEL_ID", "").strip()
 MUSIC_CHANNEL_ID = int(_music_channel_raw) if _music_channel_raw else None
+_cookies_env = os.getenv("YTDL_COOKIES_PATH", "").strip()
+_cookies_default = os.path.join(os.path.dirname(__file__), "..", "cookies.txt")
+YTDL_COOKIES_PATH = _cookies_env if _cookies_env else os.path.normpath(_cookies_default) if os.path.isfile(_cookies_default) else None
 URL_RESOLVE_TIMEOUT_SECONDS = 8
 BOT_START_TIME = time.monotonic()
 
@@ -307,6 +310,23 @@ class YTDLSource(discord.PCMVolumeTransformer):
         'noplaylist': True,
         'quiet': True,
         'default_search': 'ytsearch',
+        # Impersonate a real browser to reduce bot detection
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+        # Use the tv_embedded player client — less scrutinized by YouTube bot detection
+        'extractor_args': {'youtube': {'player_client': ['tv_embedded', 'web_embedded']}},
+        # Small random delay between requests to avoid machine-speed fingerprinting
+        'sleep_interval': 1,
+        'max_sleep_interval': 3,
+        'sleep_interval_requests': 1,
+        # Prevent hung connections
+        'socket_timeout': 15,
+        # Bypass geographic access checks
+        'geo_bypass': True,
+        **({'cookiefile': YTDL_COOKIES_PATH} if YTDL_COOKIES_PATH else {}),
     }
 
 
