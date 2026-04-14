@@ -699,9 +699,23 @@ class VoiceState:
         if self.is_playing and self.voice:
             self.voice.stop()
 
+    def _reset_effects(self):
+        """Reset loop and all audio-effect flags to defaults."""
+        self._loop = False
+        self.nightcore = False
+        self.slowmo = False
+        self.vaporwave = False
+        self.reverse = False
+        self.bass = False
+        self.lofi = False
+        self.echo = False
+        self.tremolo = False
+        self.fadein = False
+
     async def stop(self):
         self.songs.clear()
         self.current_started_at = None
+        self._reset_effects()
 
         if self.voice:
             # voice.stop() cleanly terminates the ffmpeg process and
@@ -820,7 +834,7 @@ class Music(commands.Cog):
                     f"`{prefix}stop` Stop and clear (admin)\n"
                     f"`{prefix}skip` Skip current track\n"
                     f"`{prefix}replay` Replay current track\n"
-                    f"`{prefix}loop` Toggle loop\n"
+                    f"`{prefix}loop on|off` Loop current track\n"
                     f"`{prefix}volume <0-100>` Set volume"
                 ),
                 inline=False,
@@ -987,6 +1001,7 @@ class Music(commands.Cog):
         """
 
         ctx.voice_state.songs.clear()
+        ctx.voice_state.loop = False
 
         if ctx.voice_state.is_playing:
             ctx.voice_state.voice.stop()
@@ -1088,18 +1103,22 @@ class Music(commands.Cog):
         await ctx.message.add_reaction('💥')
 
     @commands.command(name='loop')
-    async def _loop(self, ctx: commands.Context):
-        """Toggle loop for the current track.
+    async def _loop(self, ctx: commands.Context, mode: str):
+        """Enable or disable loop for the current track.
 
-        Usage: $loop
+        Usage: $loop on
+        Usage: $loop off
         """
+        mode_normalized = mode.strip().lower()
+        if mode_normalized not in {"on", "off"}:
+            return await ctx.send("Usage: #loop on|off")
 
         if not ctx.voice_state.is_playing:
             return await ctx.send('Nothing being played at the moment.')
 
-        # Inverse boolean value to loop and unloop.
-        ctx.voice_state.loop = not ctx.voice_state.loop
-        await ctx.message.add_reaction('➰')
+        ctx.voice_state.loop = mode_normalized == "on"
+        state = "enabled" if ctx.voice_state.loop else "disabled"
+        await ctx.send(f'🔁 Loop is now {state}.')
 
     @commands.command(name='patchnotes', aliases=['bugs', 'patch'])
     async def _patchnotes(self, ctx: commands.Context):
