@@ -1,3 +1,29 @@
+v3.0
+
+Summary
+- Production release incorporating all beta-tested fixes. Resolves the critical "enqueued but nothing plays" idle bug, reworks FFmpeg process management, adds stream URL re-resolution, and improves state cleanup on disconnect.
+
+🔧 CRITICAL FIX: STALE PLAYBACK BUG
+- FIXED: Songs would enqueue but never play after the bot sat idle for ~3 minutes. Root cause: the internal audio player task died on idle timeout but the bot kept reusing the dead session. New songs went into a queue nobody was consuming.
+- FIXED: "Already playing audio" errors caused by stale voice client state after Discord voice reconnects. The bot now force-clears any stuck player before starting a new track.
+- FIXED: Redundant manual ffmpeg process tracking that conflicted with discord.py's own cleanup — caused the "ffmpeg process should have terminated with return code of -9" log spam and potential double-termination issues. Removed entirely; discord.py manages ffmpeg lifecycle internally.
+- Added voice connection health check (is_connected) before attempting playback.
+- Added stream URL re-resolution at play time to avoid stale/expired YouTube URLs.
+- Added diagnostic logging throughout the player lifecycle for easier future debugging.
+
+🔁 REWORKED: LOOP COMMAND
+- $loop now requires on/off flag ($loop on / $loop off) — consistent with all other effect commands.
+- $stop now explicitly disables loop, so loop can no longer override a stop command.
+- Loop state is displayed with a clear text message instead of just a reaction.
+
+🧹 STATE CLEANUP ON DISCONNECT
+- All effect and loop states are now reset when the bot disconnects — whether via $leave, $stop, or idle timeout.
+- New internal _reset_effects() helper ensures loop, nightcore, slowmo, vaporwave, reverse, bass, lofi, echo, tremolo, and fadein are all cleared to defaults on disconnect.
+- Prevents stale effect settings from carrying over into the next listening session.
+
+📋 UPDATED HELP
+- Help menu updated to show $loop on|off syntax.
+
 v2.4
 
 Bugfixes

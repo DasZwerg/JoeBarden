@@ -16,7 +16,11 @@ A feature-rich Discord music bot with audio effects, AI integration, and party f
 - **Slow-mo**: Slow down music by 15% for chill vibes
 - **Vaporwave**: Aesthetic slowed + echo effect
 - **Reverse**: Play music backwards for hidden messages
-- **Robot**: Mechanical voice transformation
+- **Bass Boost**: Heavy bass for party vibes
+- **Lo-Fi**: Crunchy vintage sound for study sessions
+- **Echo**: Triple echo chamber for atmospheric effects
+- **Tremolo**: Pulsing tremolo effect for rave vibes
+- **Fade-In**: Smooth fade-in for professional transitions
 
 ### 🤖 AI Assistant Integration
 - **General Q&A**: Ask anything with `$ask`
@@ -61,7 +65,7 @@ GEMINI_API_KEY=your_gemini_api_key
 
 4. **Run the bot**
 ```bash
-python JoeBidenBot2_2.py
+python JoeBardenBot3.py
 ```
 
 ## 📋 Commands
@@ -72,6 +76,7 @@ python JoeBidenBot2_2.py
 - `$queue` - Show current queue
 - `$now` - Show current song
 - `$volume <0-100>` - Set volume
+- `$loop on/off` - Loop current track
 - `$stop` - Stop playback (admin)
 - `$leave` - Disconnect (admin)
 
@@ -81,7 +86,11 @@ python JoeBidenBot2_2.py
 - `$slowmo on/off` - Slow down music
 - `$vaporwave on/off` - Aesthetic effect
 - `$reverse on/off` - Play backwards
-- `$robot on/off` - Robot voice
+- `$bass on/off` - Heavy bass boost
+- `$lofi on/off` - Crunchy vintage sound
+- `$echo on/off` - Triple echo chamber
+- `$tremolo on/off` - Pulsing tremolo
+- `$fadein on/off` - Smooth fade-in
 
 ### AI Commands
 - `$ask <question>` - Ask AI anything
@@ -118,10 +127,30 @@ python JoeBidenBot2_2.py
 - Effect: Plays music backwards
 - Use case: Finding "hidden messages"
 
-### Robot (`$robot on`)
-- Perfect for: Electronic music, sci-fi theme
-- Effect: Mechanical voice transformation
-- Use case: Futuristic vibes, robot voice
+### Bass Boost (`$bass on`)
+- Perfect for: Parties, EDM, hip-hop
+- Effect: Heavy +15dB bass boost
+- Use case: Dance sessions, heavy drops
+
+### Lo-Fi (`$lofi on`)
+- Perfect for: Study sessions, background music
+- Effect: Crunchy vintage bit-crushed sound
+- Use case: Relaxing, nostalgic vibes
+
+### Echo (`$echo on`)
+- Perfect for: Atmospheric, ambient sessions
+- Effect: Triple echo chamber with decay
+- Use case: Dreamy, spacey atmosphere
+
+### Tremolo (`$tremolo on`)
+- Perfect for: Raves, electronic music
+- Effect: Pulsing sine-wave volume modulation
+- Use case: Rave vibes, wobble effect
+
+### Fade-In (`$fadein on`)
+- Perfect for: Professional transitions
+- Effect: 3-second smooth volume fade-in
+- Use case: Clean track starts, DJ sets
 
 ## 🤖 AI Features
 
@@ -258,7 +287,7 @@ $chat  # Chill with AI
 ### Project Structure
 ```
 JoeBarden/
-├── JoeBidenBot2_2.py    # Main bot file
+├── JoeBardenBot3.py     # Main bot file
 ├── .env                  # Environment variables
 ├── requirements.txt      # Python dependencies
 ├── playlists.json       # Saved playlists

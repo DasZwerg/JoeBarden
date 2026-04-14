@@ -1,6 +1,6 @@
 # -*-  coding: utf-8 -*-
 
-#VERSION 2.1
+#VERSION 3.0
 #REFER TO PATCHNOTES FOR MORE DETAIL ON UPDATES
 #Copyright LPSC LLC.
 
@@ -538,8 +538,6 @@ class VoiceState:
         self.tremolo = False
         self.fadein = False
         self.songs_played = 0
-        self._ffmpeg_process: Optional[asyncio.subprocess.Process] = None
-        self._cleanup_lock = asyncio.Lock()
 
         self.audio_player = asyncio.create_task(self.audio_player_task())
 
@@ -547,16 +545,6 @@ class VoiceState:
         audio_player = getattr(self, "audio_player", None)
         if audio_player:
             audio_player.cancel()
-        # Cleanup ffmpeg process if it exists
-        if hasattr(self, '_ffmpeg_process') and self._ffmpeg_process:
-            try:
-                self._ffmpeg_process.terminate()
-                self._ffmpeg_process.wait(timeout=5)
-            except:
-                try:
-                    self._ffmpeg_process.kill()
-                except:
-                    pass
 
     @property
     def loop(self):
@@ -593,6 +581,7 @@ class VoiceState:
                     async with asyncio.timeout(180):  # 3 minutes
                         self.current = await self.songs.get()
                 except asyncio.TimeoutError:
+                    print("[Player] Idle timeout (180 s) — disconnecting voice")
                     asyncio.create_task(self.stop())
                     return
 
@@ -602,11 +591,35 @@ class VoiceState:
             self.skip_votes.clear()
             channel = self.current.source.channel
             source_metadata = self.current.source
-            stream_url = source_metadata.stream_url or source_metadata.data.get('url')
+
+            # Fix A: Re-resolve a fresh stream URL at play time to avoid stale/expired YouTube URLs.
+            stream_url = None
+            webpage_url = source_metadata.url
+            if webpage_url:
+                try:
+                    loop = asyncio.get_running_loop()
+                    partial = functools.partial(
+                        YTDLSource.ytdl.extract_info,
+                        webpage_url,
+                        download=False
+                    )
+                    fresh_data = await loop.run_in_executor(None, partial)
+                    if isinstance(fresh_data, dict) and 'entries' in fresh_data:
+                        entries = fresh_data.get('entries') or []
+                        fresh_data = next((e for e in entries if isinstance(e, dict)), None)
+                    if isinstance(fresh_data, dict):
+                        stream_url = fresh_data.get('url')
+                except Exception as resolve_exc:
+                    print(f"[Player] Stream URL re-resolve failed, falling back to cached URL: {resolve_exc}")
+
+            if not stream_url:
+                stream_url = source_metadata.stream_url or source_metadata.data.get('url')
             if not stream_url:
                 await self._send_player_error(channel, "No playable stream URL was returned for this track.")
                 continue
 
+            # Fix B: Use a flag so exception paths don't skip self.next.wait(), preventing queue desync.
+            played = False
             try:
                 # Re-create FFmpeg source at play time to reduce stale/expired stream issues.
                 ffmpeg_options = dict(YTDLSource.FFMPEG_OPTIONS)
@@ -630,60 +643,54 @@ class VoiceState:
                     ffmpeg_options["options"] = "-vn -b:a 192k -af apulsator=mode=sine:hz=2"
                 elif self.fadein:
                     ffmpeg_options["options"] = "-vn -b:a 192k -af afade=t=in:st=0:d=3"
-                                
-                # Create a custom FFmpeg source with better error handling
-                source = discord.FFmpegPCMAudio(stream_url, **ffmpeg_options)
-                playback_source = discord.PCMVolumeTransformer(source, volume=self._volume)
-                
+
                 if not self.voice:
                     await self._send_player_error(channel, "Voice connection dropped before playback started.")
-                    continue
-                    
-                # Store the ffmpeg process reference for cleanup
-                self._ffmpeg_process = getattr(source, '_process', None)
-                
-                self.voice.play(playback_source, after=self.play_next_song)
-                self.current_started_at = time.monotonic()
-                self.songs_played += 1
-                self.history.append(self.current)
-                if len(self.history) > self.history_limit:
-                    self.history.pop(0)
-                await channel.send(embed=self.current.create_embed())
-                
+                elif not self.voice.is_connected():
+                    await self._send_player_error(channel, "Voice client is no longer connected.")
+                else:
+                    # Guard: clear any stale player state that discord.py
+                    # may still think is active (see discord.py #8483).
+                    if self.voice.is_playing() or self.voice.is_paused():
+                        print("[Player] Clearing stale audio player before new track")
+                        self.voice.stop()
+                        await asyncio.sleep(0.15)
+
+                    print(f"[Player] Starting playback: {source_metadata.title}")
+                    source = discord.FFmpegPCMAudio(stream_url, **ffmpeg_options)
+                    playback_source = discord.PCMVolumeTransformer(source, volume=self._volume)
+
+                    self.voice.play(playback_source, after=self.play_next_song)
+                    self.current_started_at = time.monotonic()
+                    self.songs_played += 1
+                    self.history.append(self.current)
+                    if len(self.history) > self.history_limit:
+                        self.history.pop(0)
+                    try:
+                        await channel.send(embed=self.current.create_embed())
+                    except discord.Forbidden:
+                        pass
+                    played = True
+
             except FileNotFoundError:
                 await self._send_player_error(channel, "ffmpeg is not installed or not in PATH.")
-                continue
             except discord.ClientException as exc:
+                print(f"[Player] ClientException during play: {exc}")
                 await self._send_player_error(channel, f"Audio playback failed: {exc}")
-                continue
             except Exception as exc:
+                print(f"[Player] Unexpected error during play: {exc}")
                 await self._send_player_error(channel, f"Unexpected playback failure: {exc}")
-                continue
 
-            await self.next.wait()
-
-            if self._playback_error:
-                await self._send_player_error(channel, f"Track playback error: {self._playback_error}")
-                self._playback_error = None
-
-
-
+            if played:
+                await self.next.wait()
+                if self._playback_error:
+                    await self._send_player_error(channel, f"Track playback error: {self._playback_error}")
+                    self._playback_error = None
 
     def play_next_song(self, error=None):
+        if error:
+            print(f"[Player] Playback error reported: {error}")
         self._playback_error = str(error) if error else None
-        
-        # Cleanup ffmpeg process
-        if hasattr(self, '_ffmpeg_process') and self._ffmpeg_process:
-            try:
-                self._ffmpeg_process.terminate()
-            except:
-                try:
-                    self._ffmpeg_process.kill()
-                except:
-                    pass
-            finally:
-                self._ffmpeg_process = None
-                
         self.bot.loop.call_soon_threadsafe(self.next.set)
 
     def skip(self):
@@ -692,27 +699,33 @@ class VoiceState:
         if self.is_playing and self.voice:
             self.voice.stop()
 
+    def _reset_effects(self):
+        """Reset loop and all audio-effect flags to defaults."""
+        self._loop = False
+        self.nightcore = False
+        self.slowmo = False
+        self.vaporwave = False
+        self.reverse = False
+        self.bass = False
+        self.lofi = False
+        self.echo = False
+        self.tremolo = False
+        self.fadein = False
+
     async def stop(self):
         self.songs.clear()
         self.current_started_at = None
-
-        async with self._cleanup_lock:
-            # Cleanup any existing ffmpeg process
-            if self._ffmpeg_process:
-                try:
-                    self._ffmpeg_process.terminate()
-                    try:
-                        await asyncio.wait_for(self._ffmpeg_process.wait(), timeout=5.0)
-                    except asyncio.TimeoutError:
-                        self._ffmpeg_process.kill()
-                        await self._ffmpeg_process.wait()
-                except Exception:
-                    pass
-                finally:
-                    self._ffmpeg_process = None
+        self._reset_effects()
 
         if self.voice:
-            await self.voice.disconnect()
+            # voice.stop() cleanly terminates the ffmpeg process and
+            # AudioPlayer thread managed internally by discord.py.
+            if self.voice.is_playing() or self.voice.is_paused():
+                self.voice.stop()
+            try:
+                await self.voice.disconnect()
+            except Exception:
+                pass
             self.voice = None
 
 
@@ -741,6 +754,16 @@ class Music(commands.Cog):
 
     def get_voice_state(self, ctx: commands.Context):
         state = self.voice_states.get(ctx.guild.id)
+        if state and state.audio_player.done():
+            # The audio_player_task has died (e.g. idle timeout).  The old
+            # VoiceState is a zombie — its queue will never be consumed.
+            # Replace it with a fresh one so new songs actually play.
+            print(f"[VoiceState] Replacing dead VoiceState for guild {ctx.guild.id}")
+            try:
+                state.audio_player.cancel()
+            except Exception:
+                pass
+            state = None
         if not state:
             state = VoiceState(self.bot, ctx)
             self.voice_states[ctx.guild.id] = state
@@ -800,7 +823,7 @@ class Music(commands.Cog):
                     f"`{prefix}stop` Stop and clear (admin)\n"
                     f"`{prefix}skip` Skip current track\n"
                     f"`{prefix}replay` Replay current track\n"
-                    f"`{prefix}loop` Toggle loop\n"
+                    f"`{prefix}loop on|off` Loop current track\n"
                     f"`{prefix}volume <0-100>` Set volume"
                 ),
                 inline=False,
@@ -978,6 +1001,7 @@ class Music(commands.Cog):
         """
 
         ctx.voice_state.songs.clear()
+        ctx.voice_state.loop = False
 
         if ctx.voice_state.is_playing:
             ctx.voice_state.voice.stop()
@@ -1079,18 +1103,22 @@ class Music(commands.Cog):
         await ctx.message.add_reaction('💥')
 
     @commands.command(name='loop')
-    async def _loop(self, ctx: commands.Context):
-        """Toggle loop for the current track.
+    async def _loop(self, ctx: commands.Context, mode: str):
+        """Enable or disable loop for the current track.
 
-        Usage: $loop
+        Usage: $loop on
+        Usage: $loop off
         """
+        mode_normalized = mode.strip().lower()
+        if mode_normalized not in {"on", "off"}:
+            return await ctx.send("Usage: $loop on|off")
 
         if not ctx.voice_state.is_playing:
             return await ctx.send('Nothing being played at the moment.')
 
-        # Inverse boolean value to loop and unloop.
-        ctx.voice_state.loop = not ctx.voice_state.loop
-        await ctx.message.add_reaction('➰')
+        ctx.voice_state.loop = mode_normalized == "on"
+        state = "enabled" if ctx.voice_state.loop else "disabled"
+        await ctx.send(f'🔁 Loop is now {state}.')
 
     @commands.command(name='patchnotes', aliases=['bugs', 'patch'])
     async def _patchnotes(self, ctx: commands.Context):
