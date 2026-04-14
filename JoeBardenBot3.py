@@ -1129,8 +1129,32 @@ class Music(commands.Cog):
         """
         try:
             patchnotes_path = os.path.join(os.path.dirname(__file__), "patchnotes.txt")
-            with open(patchnotes_path, encoding="utf-8") as patchnotes:
-                await ctx.send(patchnotes.read())
+            with open(patchnotes_path, encoding="utf-8") as f:
+                content = f.read()
+
+            # Parse version sections (headers like "v3.0", "v2.4", etc.)
+            import re
+            version_pattern = re.compile(r'^(v\d+\.\d+.*)$', re.MULTILINE)
+            matches = list(version_pattern.finditer(content))
+
+            if len(matches) >= 2:
+                # Extract first two version sections (most recent)
+                start = matches[0].start()
+                end = matches[2].start() if len(matches) > 2 else len(content)
+                trimmed = content[start:end].strip()
+
+                # If still too long, only show latest version
+                if len(trimmed) > 3950:
+                    end = matches[1].start()
+                    trimmed = content[start:end].strip()
+
+                await ctx.send(trimmed)
+            else:
+                # Fallback: send full content if parsing fails
+                if len(content) > 3950:
+                    await ctx.send(file=discord.File(patchnotes_path, filename="patchnotes.txt"))
+                else:
+                    await ctx.send(content)
         except FileNotFoundError:
             await ctx.send("patchnotes.txt was not found.")
 
