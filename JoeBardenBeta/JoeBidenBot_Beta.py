@@ -538,8 +538,6 @@ class VoiceState:
         self.tremolo = False
         self.fadein = False
         self.songs_played = 0
-        self._ffmpeg_process: Optional[asyncio.subprocess.Process] = None
-        self._cleanup_lock = asyncio.Lock()
 
         self.audio_player = asyncio.create_task(self.audio_player_task())
 
@@ -547,16 +545,6 @@ class VoiceState:
         audio_player = getattr(self, "audio_player", None)
         if audio_player:
             audio_player.cancel()
-        # Cleanup ffmpeg process if it exists
-        if hasattr(self, '_ffmpeg_process') and self._ffmpeg_process:
-            try:
-                self._ffmpeg_process.terminate()
-                self._ffmpeg_process.wait(timeout=5)
-            except:
-                try:
-                    self._ffmpeg_process.kill()
-                except:
-                    pass
 
     @property
     def loop(self):
@@ -593,6 +581,7 @@ class VoiceState:
                     async with asyncio.timeout(180):  # 3 minutes
                         self.current = await self.songs.get()
                 except asyncio.TimeoutError:
+                    print("[Player] Idle timeout (180 s) — disconnecting voice")
                     asyncio.create_task(self.stop())
                     return
 
@@ -621,7 +610,7 @@ class VoiceState:
                     if isinstance(fresh_data, dict):
                         stream_url = fresh_data.get('url')
                 except Exception as resolve_exc:
-                    print(f"[Beta] Stream URL re-resolve failed, falling back to cached URL: {resolve_exc}")
+                    print(f"[Player] Stream URL re-resolve failed, falling back to cached URL: {resolve_exc}")
 
             if not stream_url:
                 stream_url = source_metadata.stream_url or source_metadata.data.get('url')
@@ -657,12 +646,19 @@ class VoiceState:
 
                 if not self.voice:
                     await self._send_player_error(channel, "Voice connection dropped before playback started.")
+                elif not self.voice.is_connected():
+                    await self._send_player_error(channel, "Voice client is no longer connected.")
                 else:
+                    # Guard: clear any stale player state that discord.py
+                    # may still think is active (see discord.py #8483).
+                    if self.voice.is_playing() or self.voice.is_paused():
+                        print("[Player] Clearing stale audio player before new track")
+                        self.voice.stop()
+                        await asyncio.sleep(0.15)
+
+                    print(f"[Player] Starting playback: {source_metadata.title}")
                     source = discord.FFmpegPCMAudio(stream_url, **ffmpeg_options)
                     playback_source = discord.PCMVolumeTransformer(source, volume=self._volume)
-
-                    # Store the ffmpeg process reference for cleanup
-                    self._ffmpeg_process = getattr(source, '_process', None)
 
                     self.voice.play(playback_source, after=self.play_next_song)
                     self.current_started_at = time.monotonic()
@@ -676,8 +672,10 @@ class VoiceState:
             except FileNotFoundError:
                 await self._send_player_error(channel, "ffmpeg is not installed or not in PATH.")
             except discord.ClientException as exc:
+                print(f"[Player] ClientException during play: {exc}")
                 await self._send_player_error(channel, f"Audio playback failed: {exc}")
             except Exception as exc:
+                print(f"[Player] Unexpected error during play: {exc}")
                 await self._send_player_error(channel, f"Unexpected playback failure: {exc}")
 
             if played:
@@ -690,20 +688,9 @@ class VoiceState:
 
 
     def play_next_song(self, error=None):
+        if error:
+            print(f"[Player] Playback error reported: {error}")
         self._playback_error = str(error) if error else None
-        
-        # Cleanup ffmpeg process
-        if hasattr(self, '_ffmpeg_process') and self._ffmpeg_process:
-            try:
-                self._ffmpeg_process.terminate()
-            except:
-                try:
-                    self._ffmpeg_process.kill()
-                except:
-                    pass
-            finally:
-                self._ffmpeg_process = None
-                
         self.bot.loop.call_soon_threadsafe(self.next.set)
 
     def skip(self):
@@ -716,23 +703,15 @@ class VoiceState:
         self.songs.clear()
         self.current_started_at = None
 
-        async with self._cleanup_lock:
-            # Cleanup any existing ffmpeg process
-            if self._ffmpeg_process:
-                try:
-                    self._ffmpeg_process.terminate()
-                    try:
-                        await asyncio.wait_for(self._ffmpeg_process.wait(), timeout=5.0)
-                    except asyncio.TimeoutError:
-                        self._ffmpeg_process.kill()
-                        await self._ffmpeg_process.wait()
-                except Exception:
-                    pass
-                finally:
-                    self._ffmpeg_process = None
-
         if self.voice:
-            await self.voice.disconnect()
+            # voice.stop() cleanly terminates the ffmpeg process and
+            # AudioPlayer thread managed internally by discord.py.
+            if self.voice.is_playing() or self.voice.is_paused():
+                self.voice.stop()
+            try:
+                await self.voice.disconnect()
+            except Exception:
+                pass
             self.voice = None
 
 
@@ -761,6 +740,16 @@ class Music(commands.Cog):
 
     def get_voice_state(self, ctx: commands.Context):
         state = self.voice_states.get(ctx.guild.id)
+        if state and state.audio_player.done():
+            # The audio_player_task has died (e.g. idle timeout).  The old
+            # VoiceState is a zombie — its queue will never be consumed.
+            # Replace it with a fresh one so new songs actually play.
+            print(f"[VoiceState] Replacing dead VoiceState for guild {ctx.guild.id}")
+            try:
+                state.audio_player.cancel()
+            except Exception:
+                pass
+            state = None
         if not state:
             state = VoiceState(self.bot, ctx)
             self.voice_states[ctx.guild.id] = state
