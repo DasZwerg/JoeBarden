@@ -127,6 +127,10 @@ else:
     available_models = []
     print("Warning: GEMINI_API_KEY not found in .env file")
 
+class GeminiQuotaError(Exception):
+    """Raised when the Gemini API returns a quota or rate-limit exhaustion error."""
+
+
 def generate_content_with_fallback(contents: str, system_instruction: Optional[str] = None) -> str:
     """Generate content with automatic model fallback on failure.
     
@@ -144,6 +148,7 @@ def generate_content_with_fallback(contents: str, system_instruction: Optional[s
         system_instruction=system_instruction
     ) if system_instruction else None
 
+    global _gemini_quota_exhausted_at
     last_error = None
     for model_name in models_to_try:
         try:
@@ -155,14 +160,19 @@ def generate_content_with_fallback(contents: str, system_instruction: Optional[s
         except Exception as error:
             last_error = error
             error_msg = str(error).lower()
-            
-            # If it's a 404 or model not found error, try next model
+
+            # Quota / rate-limit exhaustion — set the global block flag
+            if any(k in error_msg for k in ['429', 'quota', 'resource_exhausted', 'rate limit', 'rate_limit']):
+                _gemini_quota_exhausted_at = time.monotonic()
+                print(f"🚫 Gemini quota exhausted: {error}")
+                raise GeminiQuotaError(str(error)) from error
+
+            # Model unavailable — try next model
             if any(keyword in error_msg for keyword in ['404', 'not found', 'no longer available']):
                 print(f"⚠️  Model {model_name} failed: {error}")
                 print(f"🔄 Trying next model...")
                 continue
             else:
-                # For other errors, don't retry - they might be rate limits or other issues
                 raise error
     
     # If all models failed, raise the last error
@@ -171,6 +181,20 @@ def generate_content_with_fallback(contents: str, system_instruction: Optional[s
 # AI usage tracking
 AI_USAGE = {}
 DAILY_LIMIT = 1500  # Gemini free tier limit
+
+# Gemini quota exhaustion state — set when the API returns a hard quota error.
+# Cleared automatically after QUOTA_RETRY_SECONDS so the bot retries naturally.
+QUOTA_RETRY_SECONDS = 3600  # re-attempt after 1 hour
+_gemini_quota_exhausted_at: Optional[float] = None
+
+BARD_QUOTA_MESSAGE = (
+    "🎶 *The Bard sets down his lute and sighs deeply.*\n"
+    "Hark, good traveler — mine words have run dry for the day. "
+    "The ancient spirits that power mine tongue have declared, forsooth, that I have spoken *quite enough* for one day. "
+    "Here's the deal — not a joke — even bards must rest. "
+    "Prithee return on the morrow, when mine verses shall flow freely once more."
+)
+
 
 MOOD_QUERIES = {
     "happy": [
@@ -755,7 +779,6 @@ class Music(commands.Cog):
         self.bot = bot
         self.voice_states = {}
         self.playlists_path = os.path.join(os.path.dirname(__file__), "playlists.json")
-        self.ai_conversations = {}  # Store conversation history
 
     def _read_playlists(self) -> dict[str, dict[str, list[str]]]:
         if not os.path.exists(self.playlists_path):
@@ -894,9 +917,10 @@ class Music(commands.Cog):
                     f"`{prefix}bard <request>` Ask the Bard — AI queues songs for you\n"
                     f"`{prefix}ask <question>` Ask AI anything\n"
                     f"`{prefix}dj <request>` AI music recommendations\n"
-                    f"`{prefix}chat` Start private AI conversation\n"
+                    f"`{prefix}roastdj [@user]` AI-powered roast of the DJ\n"
                     f"`{prefix}aistats` Check AI usage limits\n\n"
-                    f"⚠️ **Please use AI responsibly** - I pay for each request!"
+                    f"⚠️ **Please use AI responsibly** — I pay for each request!\n"
+                    f"🎶 AI commands are unavailable while music is playing or queued."
                 ),
                 inline=False,
             )
@@ -906,7 +930,6 @@ class Music(commands.Cog):
                     f"`{prefix}usage` Simple how-to guide\n"
                     f"`{prefix}votemode on|off` Toggle vote skip mode\n"
                     f"`{prefix}stats` Show bot stats\n"
-                    f"`{prefix}roastdj [@user]` Roast the DJ\n"
                     f"`{prefix}shuffle` Shuffle queue\n"
                     f"`{prefix}remove <index>` Remove queued track\n"
                     f"`{prefix}patchnotes` View changelog"
@@ -1724,8 +1747,15 @@ class Music(commands.Cog):
         song_title = ctx.voice_state.current.source.title
         uploader = ctx.voice_state.current.source.uploader or "an unknown minstrel"
 
+        if self._ai_quota_check():
+            return await ctx.send(f"{roast_target.mention}, {random.choice(DJ_ROASTS)}")
+
         if not gemini_model or not self._check_ai_limit(ctx.author.id):
             return await ctx.send(f"{roast_target.mention}, {random.choice(DJ_ROASTS)}")
+
+        warning = self._warn_if_approaching_limit(ctx.author.id)
+        if warning:
+            await ctx.send(warning)
 
         try:
             roast_prompt = (
@@ -1894,6 +1924,43 @@ class Music(commands.Cog):
 
         await ctx.send(embed=embed)
 
+    def _is_music_active(self, ctx: commands.Context) -> bool:
+        """Return True if music is currently playing, paused, or queued."""
+        vs = ctx.voice_state
+        if vs.current is not None:
+            return True
+        if len(vs.songs) > 0:
+            return True
+        if vs.voice and vs.voice.is_paused():
+            return True
+        return False
+
+    def _ai_quota_check(self) -> bool:
+        """Return True if Gemini is currently hard-blocked due to quota exhaustion.
+        Automatically clears the block after QUOTA_RETRY_SECONDS."""
+        global _gemini_quota_exhausted_at
+        if _gemini_quota_exhausted_at is None:
+            return False
+        if time.monotonic() - _gemini_quota_exhausted_at >= QUOTA_RETRY_SECONDS:
+            _gemini_quota_exhausted_at = None
+            return False
+        return True
+
+    def _warn_if_approaching_limit(self, user_id: int) -> Optional[str]:
+        """Return a warning string if the user or global pool is running low, else None."""
+        today = datetime.now().date()
+        if today not in AI_USAGE:
+            return None
+        user_requests = AI_USAGE[today].get(user_id, 0)
+        total_requests = sum(AI_USAGE[today].values())
+        remaining_user = max(0, 50 - user_requests)
+        remaining_total = max(0, DAILY_LIMIT - total_requests)
+        if remaining_user <= 5:
+            return f"⚠️ *Hark — thou hast but {remaining_user} verse(s) remaining today, good traveler.*"
+        if remaining_total <= 50:
+            return f"⚠️ *The realm's collective bardic power runs low — only {remaining_total} request(s) remain today.*"
+        return None
+
     # AI Helper Functions
     def _check_ai_limit(self, user_id: int) -> bool:
         """Check if user is within AI usage limits."""
@@ -1955,10 +2022,24 @@ class Music(commands.Cog):
         """
         if not gemini_model:
             return await ctx.send("❌ AI is not available. Check API configuration.")
-        
+
+        if self._ai_quota_check():
+            return await ctx.send(BARD_QUOTA_MESSAGE)
+
+        if self._is_music_active(ctx):
+            return await ctx.send(
+                "🎶 *The Bard waves thee off without looking up from his lute.*\n"
+                "Prithee, I am **occupied** — mine fingers dance upon these strings and mine ears hear naught but melody. "
+                "Here's the deal, not a joke — come back when the music's done, c'mon man."
+            )
+
         if not self._check_ai_limit(ctx.author.id):
             return await ctx.send("⏰ You've reached your daily AI limit. Try again tomorrow!")
-        
+
+        warning = self._warn_if_approaching_limit(ctx.author.id)
+        if warning:
+            await ctx.send(warning)
+
         try:
             await ctx.send("🤔 Thinking...")
             
@@ -1985,43 +2066,10 @@ class Music(commands.Cog):
                         await ctx.send(f"🎶 **Part {i+1}/{len(chunks)}:**\n{chunk}")
                         await asyncio.sleep(1)  # Small delay between chunks
                     
+        except GeminiQuotaError:
+            await ctx.send(BARD_QUOTA_MESSAGE)
         except Exception as e:
             await ctx.send(f"❌ AI error: {str(e)}")
-
-    @commands.command(name='chat')
-    @commands.cooldown(1, 60, commands.BucketType.user)  # 1 request per minute per user
-    async def _chat(self, ctx: commands.Context):
-        """Start a private conversation with the AI.
-
-        Usage: #chat
-        """
-        if not gemini_model:
-            return await ctx.send("❌ AI is not available. Check API configuration.")
-        
-        if not self._check_ai_limit(ctx.author.id):
-            return await ctx.send("⏰ You've reached your daily AI limit. Try again tomorrow!")
-        
-        try:
-            # Create a DM channel with the user
-            dm_channel = await ctx.author.create_dm()
-            
-            # Initialize conversation if not exists
-            if ctx.author.id not in self.ai_conversations:
-                self.ai_conversations[ctx.author.id] = []
-            
-            await dm_channel.send(
-                "🎶 **Joe Barden the Bard has entered thy DMs!**\n"
-                "Hark, good traveler — ask me of music and minstrelsy and I shall regale thee greatly!\n"
-                "Type `!endchat` to send me back to the tavern.\n\n"
-                "What musical query hath brought thee to mine lute?"
-            )
-            
-            await ctx.send("📩 Check your DMs! I've started a private chat with you.")
-            
-        except discord.Forbidden:
-            await ctx.send("❌ I can't send you DMs. Please enable DMs from server members.")
-        except Exception as e:
-            await ctx.send(f"❌ Chat error: {str(e)}")
 
     @commands.command(name='dj')
     @commands.cooldown(1, 60, commands.BucketType.user)
@@ -2032,10 +2080,24 @@ class Music(commands.Cog):
         """
         if not gemini_model:
             return await ctx.send("❌ AI DJ is not available. Check API configuration.")
-        
+
+        if self._ai_quota_check():
+            return await ctx.send(BARD_QUOTA_MESSAGE)
+
+        if self._is_music_active(ctx):
+            return await ctx.send(
+                "🎵 *The Bard squints at thee over his instrument.*\n"
+                "Forsooth, I am in the **middle of a set**, good traveler — verily, thou dost not interrupt a bard mid-ballad. "
+                "Wait until the music hath ceased, then we shall speak of thy DJ matters."
+            )
+
         if not self._check_ai_limit(ctx.author.id):
             return await ctx.send("⏰ You've reached your daily AI limit. Try again tomorrow!")
-        
+
+        warning = self._warn_if_approaching_limit(ctx.author.id)
+        if warning:
+            await ctx.send(warning)
+
         try:
             await ctx.send("🎵 DJ AI is thinking...")
             
@@ -2062,6 +2124,8 @@ If the user is asking for song recommendations or requesting you queue music, in
                         await ctx.send(f"🎵 **Part {i+1}/{len(chunks)}:**\n{chunk}")
                         await asyncio.sleep(1)
                         
+        except GeminiQuotaError:
+            await ctx.send(BARD_QUOTA_MESSAGE)
         except Exception as e:
             await ctx.send(f"❌ DJ AI error: {str(e)}")
 
@@ -2109,8 +2173,22 @@ If the user is asking for song recommendations or requesting you queue music, in
         if not gemini_model:
             return await ctx.send("❌ The Bard's tongue is silent. Check API configuration.")
 
+        if self._ai_quota_check():
+            return await ctx.send(BARD_QUOTA_MESSAGE)
+
+        if self._is_music_active(ctx):
+            return await ctx.send(
+                "🎶 *The Bard dramatically raises one finger without breaking his strum.*\n"
+                "NOT — NOW. Mine lute singeth, the queue is full, and I, Joe Barden the Bard, am **busy**. "
+                "No malarkey — wait for the music to finish and THEN ask me for more songs, c'mon man."
+            )
+
         if not self._check_ai_limit(ctx.author.id):
             return await ctx.send("⏰ The Bard hath exhausted his daily verses. Try again tomorrow!")
+
+        warning = self._warn_if_approaching_limit(ctx.author.id)
+        if warning:
+            await ctx.send(warning)
 
         try:
             await ctx.send("🎶 *The Bard strums his lute thoughtfully...*")
@@ -2169,6 +2247,8 @@ Then provide QUEUE_SONGS with 3-5 real, searchable song titles that match the re
             else:
                 await ctx.send("*(The Bard hath not named specific songs — use `#play` to queue thy own!)*")
 
+        except GeminiQuotaError:
+            await ctx.send(BARD_QUOTA_MESSAGE)
         except Exception as e:
             await ctx.send(f"❌ The Bard tripped over his lute: {str(e)}")
 
@@ -2222,41 +2302,6 @@ async def on_message(message):
     print(f'MESSAGE RECEIVED: {message.content}')
     if message.author.bot:
         return
-
-    # Handle AI chat in DMs
-    if message.guild is None and gemini_model:  # DM message
-        music_cog = bot.get_cog("Music")
-        if music_cog and message.author.id in music_cog.ai_conversations:
-            if message.content.lower() == '!endchat':
-                del music_cog.ai_conversations[message.author.id]
-                await message.send("👋 Chat ended! Type `#chat` in a server to start a new conversation.")
-                return
-            
-            try:
-                # Check AI limits
-                if not music_cog._check_ai_limit(message.author.id):
-                    await message.send("⏰ You've reached your daily AI limit. Try again tomorrow!")
-                    return
-                
-                await message.send("🤔 Thinking...")
-                
-                response_text = generate_content_with_fallback(message.content, system_instruction=BARD_SYSTEM_PROMPT)
-                music_cog._track_ai_usage(message.author.id)
-                if len(response_text) <= 1900:
-                    await message.send(f"🎶 {response_text}")
-                else:
-                    chunks = [response_text[i:i+1900] for i in range(0, len(response_text), 1900)]
-                    for i, chunk in enumerate(chunks):
-                        if i == 0:
-                            await message.send(f"🎶 (part {i+1}/{len(chunks)})\n{chunk}")
-                        else:
-                            await message.send(f"🎶 Part {i+1}/{len(chunks)}:\n{chunk}")
-                            await asyncio.sleep(1)
-                            
-            except Exception as e:
-                await message.send(f"❌ AI error: {str(e)}")
-            
-            return
 
     await bot.process_commands(message)
 

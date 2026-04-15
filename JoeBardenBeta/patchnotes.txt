@@ -1,3 +1,54 @@
+v2.6 BETA
+
+Summary
+- Major AI overhaul: Joe Biden medieval bard persona, new #bard command with AI-powered song queuing, AI-powered #roastdj, smarter quota handling, and music-blocking guards on all AI commands.
+
+🤖 AI PERSONA: JOE BARDEN THE BARD
+- Gemini AI now adopts the "Joe Barden" persona across all AI commands — Joe Biden reincarnated as a medieval bard, rambling in folksy archaic style.
+- Persona enforced via BARD_SYSTEM_PROMPT system instruction passed to every Gemini call.
+- Refuses to discuss non-music topics with in-character bardic deflections.
+- Biden-isms translated into medieval form ("No malarkey in mine chord progressions", "C'mon man, everyone knows a good ballad").
+
+🎶 NEW: #bard COMMAND
+- AI-powered song queuing command: describe a vibe, mood, or request in plain language.
+- The Bard rambles in character, then automatically queues 3-5 matching songs via YouTube search.
+- Parses structured QUEUE_SONGS: output from Gemini to extract and queue tracks.
+- 45-second per-user cooldown to manage API load.
+
+🎤 UPGRADED: #roastdj NOW AI-POWERED
+- #roastdj now uses Gemini to generate a targeted bardic roast based on the actual song title and uploader.
+- Falls back to static DJ_ROASTS list if AI is unavailable or quota is exhausted.
+- 20-second guild-wide cooldown to prevent spam.
+- Returns in-character message if nothing is currently playing.
+
+🚦 NEW: MUSIC-BLOCKING GUARDS ON AI COMMANDS
+- #ask, #dj, and #bard now refuse to respond while music is playing, paused, or queued.
+- Each command returns a unique in-character bardic brush-off message.
+- #roastdj is exempt (it only works when music IS playing).
+
+⚠️ NEW: SMART QUOTA HANDLING
+- New GeminiQuotaError exception class for quota/rate-limit API errors (HTTP 429, resource_exhausted).
+- On quota exhaustion: sets a 1-hour bot-side cooldown flag (_gemini_quota_exhausted_at).
+- All AI commands return BARD_QUOTA_MESSAGE (in-character hardcoded response) when blocked.
+- After 1 hour the block auto-clears and the bot retries naturally — no manual reset needed.
+- Approaching-limit warnings: users see an in-character warning when ≤5 personal requests or ≤50 global requests remain for the day, but the command still proceeds.
+
+🔧 INTERNAL FIXES (from code review)
+- Fixed: GeminiQuotaError class now defined before generate_content_with_fallback (correct load order).
+- Fixed: global _gemini_quota_exhausted_at declaration moved to function scope top (not inside loop body).
+- Fixed: _warn_if_approaching_limit now clamps remaining counts with max(0, ...) to prevent negative values.
+- Fixed: #dj was missing _ai_quota_check() and _is_music_active() guards — now has full parity with #ask and #bard.
+
+📋 UPDATED HELP
+- AI Assistant section updated with music-blocking notice.
+- #bard added as top entry in AI section.
+- #roastdj moved from Community and Utility into AI Assistant section.
+- BETA ASCII banner and orange color restored to #help embed.
+
+🗑️ REMOVED
+- #chat command removed — private AI DM conversations disabled by design.
+- All DM handler logic removed from on_message.
+
 v2.5 BETA
 
 Summary
