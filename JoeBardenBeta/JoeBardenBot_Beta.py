@@ -51,7 +51,7 @@ URL_RESOLVE_TIMEOUT_SECONDS = 8
 BOT_START_TIME = time.monotonic()
 
 def get_best_available_model(client) -> Optional[str]:
-    """Dynamically discover and select the best available Gemini model.
+    """Select the best available Gemini model.
     
     Prioritizes models in order of preference (cheapest/most efficient first):
     1. gemini-2.5-flash (current, efficient)
@@ -59,7 +59,8 @@ def get_best_available_model(client) -> Optional[str]:
     3. gemini-1.5-pro (higher quality)
     4. gemini-2.0-flash (if still available)
     
-    Returns the first model that supports generateContent, or None if none found.
+    Returns a hardcoded preferred model since google-genai SDK 1.0+ 
+    has breaking changes to model.list() API.
     """
     # Preferred models in order (cheapest/most efficient first)
     preferred_models = [
@@ -69,52 +70,39 @@ def get_best_available_model(client) -> Optional[str]:
         "gemini-2.0-flash"
     ]
     
-    print("🔍 Discovering available Gemini models...")
+    # NOTE: google-genai SDK 1.0+ has breaking API changes.
+    # client.models.list() now returns a Pager object with different semantics.
+    # To ensure reliability, use hardcoded models that are known to work.
+    # These models support generateContent and are widely available.
     
-    try:
-        # Get list of available models
-        models = client.models.list()
-        available_models = []
-        all_model_names = []
-        
-        for model in models:
-            if not hasattr(model, 'name'):
+    print("🔍 Selecting Gemini model (using hardcoded fallback list for SDK compatibility)...")
+    
+    # Try to validate a model by making a test request
+    test_prompt = "Hi"
+    for model_name in preferred_models:
+        try:
+            print(f"🧪 Testing model: {model_name}...")
+            response = client.models.generate_content(
+                model=model_name,
+                contents=test_prompt
+            )
+            if response and hasattr(response, 'text'):
+                print(f"✅ Model '{model_name}' is working!")
+                return model_name
+        except Exception as e:
+            error_msg = str(e).lower()
+            # Model not found or quota exhausted - try next
+            if any(k in error_msg for k in ['404', 'not found', 'no longer available', 'quota', '429']):
+                print(f"⚠️  Model '{model_name}' unavailable: {e}")
                 continue
-            model_name = model.name.split('/')[-1]
-            all_model_names.append(model_name)
-            if hasattr(model, 'supported_actions') and 'generateContent' in model.supported_actions:
-                available_models.append(model_name)
-                print(f"✅ Found model (via supported_actions): {model_name}")
-        
-        print(f"📋 Total models discovered: {len(all_model_names)}, supporting generateContent: {len(available_models)}")
-        
-        # If supported_actions filtering yielded nothing, fall back to all discovered models
-        # (the newer google-genai SDK may not populate supported_actions for all models)
-        if not available_models and all_model_names:
-            print("⚠️  No models passed supported_actions filter — using all discovered models as candidates")
-            available_models = all_model_names
-        
-        # Find the best available model from our preferred list
-        for preferred in preferred_models:
-            if preferred in available_models:
-                print(f"🎯 Selected model: {preferred}")
-                return preferred
-        
-        # If none of preferred models found, use first available
-        if available_models:
-            fallback = available_models[0]
-            print(f"⚠️  Using fallback model: {fallback}")
-            return fallback
-        
-        # Last resort: hardcode the preferred model rather than returning None
-        print("⚠️  Model discovery returned no candidates — falling back to gemini-2.5-flash")
-        return "gemini-2.5-flash"
-        
-    except Exception as e:
-        print(f"❌ Error discovering models: {e}")
-        # Fallback to hardcoded model if discovery fails
-        print("🔄 Using fallback model: gemini-2.5-flash")
-        return "gemini-2.5-flash"
+            # Other error - log but continue trying
+            print(f"⚠️  Model '{model_name}' test failed: {e}")
+            continue
+    
+    # If all tests fail, return the first preferred model anyway
+    # The fallback logic in generate_content_with_fallback will handle retries
+    print(f"🔄 All model tests failed — using fallback: {preferred_models[0]}")
+    return preferred_models[0]
 
 # Initialize Gemini AI
 gemini_api_key = os.getenv("GEMINI_API_KEY")
@@ -124,21 +112,15 @@ if gemini_api_key:
     available_models = []  # Store for fallback retries
     
     # Store available models for runtime fallback
-    try:
-        models = client.models.list()
-        _all_names = []
-        for model in models:
-            if not hasattr(model, 'name'):
-                continue
-            model_name = model.name.split('/')[-1]
-            _all_names.append(model_name)
-            if hasattr(model, 'supported_actions') and 'generateContent' in model.supported_actions:
-                available_models.append(model_name)
-        # If supported_actions filter yielded nothing, use all discovered names as fallback pool
-        if not available_models and _all_names:
-            available_models.extend(_all_names)
-    except Exception as e:
-        print(f"⚠️  Could not populate runtime fallback model list: {e}")
+    # NOTE: google-genai SDK 1.0+ has breaking changes to models.list()
+    # Using hardcoded fallback models that are known to support generateContent
+    available_models = [
+        "gemini-2.5-flash",
+        "gemini-1.5-flash",
+        "gemini-1.5-pro",
+        "gemini-2.0-flash"
+    ]
+    print(f"📋 Runtime fallback models configured: {available_models}")
 else:
     client = None
     gemini_model = None
