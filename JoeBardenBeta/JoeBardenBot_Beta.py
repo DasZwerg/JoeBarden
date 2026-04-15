@@ -17,7 +17,7 @@ import time
 import urllib.parse
 import urllib.request
 from typing import Any, Optional, cast
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import yt_dlp
 import discord
@@ -75,14 +75,24 @@ def get_best_available_model(client) -> Optional[str]:
         # Get list of available models
         models = client.models.list()
         available_models = []
+        all_model_names = []
         
         for model in models:
+            if not hasattr(model, 'name'):
+                continue
+            model_name = model.name.split('/')[-1]
+            all_model_names.append(model_name)
             if hasattr(model, 'supported_actions') and 'generateContent' in model.supported_actions:
-                model_name = model.name.split('/')[-1]  # Extract model name from full path
                 available_models.append(model_name)
-                print(f"✅ Found model: {model_name}")
+                print(f"✅ Found model (via supported_actions): {model_name}")
         
-        print(f"📋 Total models supporting generateContent: {len(available_models)}")
+        print(f"📋 Total models discovered: {len(all_model_names)}, supporting generateContent: {len(available_models)}")
+        
+        # If supported_actions filtering yielded nothing, fall back to all discovered models
+        # (the newer google-genai SDK may not populate supported_actions for all models)
+        if not available_models and all_model_names:
+            print("⚠️  No models passed supported_actions filter — using all discovered models as candidates")
+            available_models = all_model_names
         
         # Find the best available model from our preferred list
         for preferred in preferred_models:
@@ -95,9 +105,10 @@ def get_best_available_model(client) -> Optional[str]:
             fallback = available_models[0]
             print(f"⚠️  Using fallback model: {fallback}")
             return fallback
-            
-        print("❌ No models found that support generateContent")
-        return None
+        
+        # Last resort: hardcode the preferred model rather than returning None
+        print("⚠️  Model discovery returned no candidates — falling back to gemini-2.5-flash")
+        return "gemini-2.5-flash"
         
     except Exception as e:
         print(f"❌ Error discovering models: {e}")
@@ -115,12 +126,19 @@ if gemini_api_key:
     # Store available models for runtime fallback
     try:
         models = client.models.list()
+        _all_names = []
         for model in models:
+            if not hasattr(model, 'name'):
+                continue
+            model_name = model.name.split('/')[-1]
+            _all_names.append(model_name)
             if hasattr(model, 'supported_actions') and 'generateContent' in model.supported_actions:
-                model_name = model.name.split('/')[-1]
                 available_models.append(model_name)
-    except Exception:
-        pass  # Fallback will work even if this fails
+        # If supported_actions filter yielded nothing, use all discovered names as fallback pool
+        if not available_models and _all_names:
+            available_models.extend(_all_names)
+    except Exception as e:
+        print(f"⚠️  Could not populate runtime fallback model list: {e}")
 else:
     client = None
     gemini_model = None
@@ -164,18 +182,20 @@ def generate_content_with_fallback(contents: str, system_instruction: Optional[s
             # Quota / rate-limit exhaustion — set the global block flag
             if any(k in error_msg for k in ['429', 'quota', 'resource_exhausted', 'rate limit', 'rate_limit']):
                 _gemini_quota_exhausted_at = time.monotonic()
-                print(f"🚫 Gemini quota exhausted: {error}")
+                print(f"🚫 [Gemini] Quota exhausted on model '{model_name}': {error}")
                 raise GeminiQuotaError(str(error)) from error
 
             # Model unavailable — try next model
             if any(keyword in error_msg for keyword in ['404', 'not found', 'no longer available']):
-                print(f"⚠️  Model {model_name} failed: {error}")
-                print(f"🔄 Trying next model...")
+                print(f"⚠️  [Gemini] Model '{model_name}' unavailable: {error}")
+                print(f"🔄 [Gemini] Trying next model...")
                 continue
             else:
+                print(f"❌ [Gemini] Unexpected error on model '{model_name}': {type(error).__name__}: {error}")
                 raise error
     
     # If all models failed, raise the last error
+    print(f"❌ [Gemini] All {len(models_to_try)} model(s) failed. Last error: {last_error}")
     raise last_error or Exception("All available models failed")
 
 # AI usage tracking
@@ -740,13 +760,11 @@ class VoiceState:
 
     def skip(self):
         self.skip_votes.clear()
-
         if self.is_playing and self.voice:
             self.voice.stop()
 
-    def _reset_effects(self):
-        """Reset loop and all audio-effect flags to defaults."""
-        self._loop = False
+    def _clear_effects(self):
+        """Clear all audio-effect flags without touching loop state."""
         self.nightcore = False
         self.slowmo = False
         self.vaporwave = False
@@ -757,14 +775,17 @@ class VoiceState:
         self.tremolo = False
         self.fadein = False
 
+    def _reset_effects(self):
+        """Reset loop and all audio-effect flags to defaults."""
+        self._loop = False
+        self._clear_effects()
+
     async def stop(self):
         self.songs.clear()
         self.current_started_at = None
         self._reset_effects()
 
         if self.voice:
-            # voice.stop() cleanly terminates the ffmpeg process and
-            # AudioPlayer thread managed internally by discord.py.
             if self.voice.is_playing() or self.voice.is_paused():
                 self.voice.stop()
             try:
@@ -787,14 +808,18 @@ class Music(commands.Cog):
             with open(self.playlists_path, "r", encoding="utf-8") as fp:
                 data = json.load(fp)
             if isinstance(data, dict):
-                return cast(dict[str, dict[str, list[str]]], data)
+                return data
         except Exception:
             pass
         return {}
 
     def _write_playlists(self, data: dict[str, dict[str, list[str]]]) -> None:
-        with open(self.playlists_path, "w", encoding="utf-8") as fp:
-            json.dump(data, fp, ensure_ascii=False, indent=2)
+        try:
+            with open(self.playlists_path, "w", encoding="utf-8") as fp:
+                json.dump(data, fp, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"❌ [playlists] Failed to write playlists: {e}")
+            raise
 
     def get_voice_state(self, ctx: commands.Context):
         state = self.voice_states.get(ctx.guild.id)
@@ -818,20 +843,29 @@ class Music(commands.Cog):
             try:
                 await state.stop()
             except Exception:
-                pass  # Ignore errors during shutdown
+                pass
         self.voice_states.clear()
 
     def cog_check(self, ctx: commands.Context):
         if not ctx.guild:
             raise commands.NoPrivateMessage('This command can\'t be used in DM channels.')
-
         return True
 
     async def cog_before_invoke(self, ctx: commands.Context):
         ctx.voice_state = self.get_voice_state(ctx)
 
     async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
-        await ctx.send('An error occurred: {}'.format(str(error)))
+        print(f"❌ [cog_command_error] {ctx.command}: {type(error).__name__}: {error}")
+        if isinstance(error, commands.CommandOnCooldown):
+            await ctx.send(f"⏳ Slow down — this command is on cooldown. Try again in {error.retry_after:.1f}s.")
+        elif isinstance(error, commands.MissingRequiredArgument):
+            await ctx.send(f"❌ Missing argument: `{error.param.name}`. Use `#help` for usage.")
+        elif isinstance(error, commands.BadArgument):
+            await ctx.send("❌ Invalid argument. Use `#help` for usage.")
+        elif isinstance(error, commands.NoPrivateMessage):
+            await ctx.send("❌ This command cannot be used in DMs.")
+        else:
+            await ctx.send("❌ Something went wrong. Please try again.")
 
     @commands.command(name='help')
     async def _help(self, ctx: commands.Context):
@@ -948,7 +982,6 @@ class Music(commands.Cog):
 
         Usage: #join
         """
-
         if not ctx.author.voice or not ctx.author.voice.channel:
             raise commands.CommandError('You are not connected to a voice channel.')
 
@@ -966,7 +999,6 @@ class Music(commands.Cog):
 
         Usage: #summon #voice-channel
         """
-
         if not channel and not ctx.author.voice:
             raise VoiceError('YOU ARENT CONNECTED TO SHIT DUMBASS')
 
@@ -984,7 +1016,6 @@ class Music(commands.Cog):
         Usage: #leave
         Alias: #disconnect
         """
-
         if not ctx.voice_state.voice:
             return await ctx.send('Not connected to any voice channel.')
 
@@ -1016,7 +1047,6 @@ class Music(commands.Cog):
         Usage: #now
         Aliases: #current, #playing
         """
-
         if not ctx.voice_state.is_playing:
             return await ctx.send('There is no song currently playing.')
 
@@ -1028,7 +1058,6 @@ class Music(commands.Cog):
 
         Usage: #pause
         """
-
         if ctx.voice_state.voice and (ctx.voice_state.is_playing or ctx.voice_state.voice.is_playing()):
             ctx.voice_state.voice.pause()
             await ctx.message.add_reaction('⏯️')
@@ -1039,7 +1068,6 @@ class Music(commands.Cog):
 
         Usage: #resume
         """
-
         if ctx.voice_state.voice and ctx.voice_state.voice.is_paused():
             ctx.voice_state.voice.resume()
             await ctx.message.add_reaction('▶️')
@@ -1050,7 +1078,6 @@ class Music(commands.Cog):
 
         Usage: #stop
         """
-
         ctx.voice_state.songs.clear()
         ctx.voice_state.loop = False
 
@@ -1064,7 +1091,6 @@ class Music(commands.Cog):
 
         Usage: #clear
         """
-
         if len(ctx.voice_state.songs) == 0:
             return await ctx.send('The queue is already empty.')
 
@@ -1077,7 +1103,6 @@ class Music(commands.Cog):
 
         Usage: #skip
         """
-
         if not ctx.voice_state.is_playing:
             return await ctx.send('NO. MUSIC. PLAYING. WHAT ARE YOU DOING!?')
 
@@ -1118,7 +1143,6 @@ class Music(commands.Cog):
         Usage: #queue 2
         Notes: 10 tracks per page.
         """
-
         if len(ctx.voice_state.songs) == 0:
             return await ctx.send('Empty queue.')
 
@@ -1144,7 +1168,6 @@ class Music(commands.Cog):
 
         Usage: #shuffle
         """
-
         if len(ctx.voice_state.songs) == 0:
             return await ctx.send('Empty queue.')
 
@@ -1157,7 +1180,6 @@ class Music(commands.Cog):
 
         Usage: #remove 3
         """
-
         if len(ctx.voice_state.songs) == 0:
             return await ctx.send('Empty queue.')
         if index < 1 or index > len(ctx.voice_state.songs):
@@ -1183,44 +1205,6 @@ class Music(commands.Cog):
         ctx.voice_state.loop = mode_normalized == "on"
         state = "enabled" if ctx.voice_state.loop else "disabled"
         await ctx.send(f'🔁 Loop is now {state}.')
-
-    @commands.command(name='patchnotes', aliases=['bugs', 'patch'])
-    async def _patchnotes(self, ctx: commands.Context):
-        """Show the latest bot patch notes.
-
-        Usage: #patchnotes
-        Aliases: #bugs, #patch
-        """
-        try:
-            patchnotes_path = os.path.join(os.path.dirname(__file__), "patchnotes.txt")
-            with open(patchnotes_path, encoding="utf-8") as f:
-                content = f.read()
-
-            # Parse version sections (headers like "v3.0", "v2.4", etc.)
-            import re
-            version_pattern = re.compile(r'^(v\d+\.\d+.*)$', re.MULTILINE)
-            matches = list(version_pattern.finditer(content))
-
-            if len(matches) >= 2:
-                # Extract first two version sections (most recent)
-                start = matches[0].start()
-                end = matches[2].start() if len(matches) > 2 else len(content)
-                trimmed = content[start:end].strip()
-
-                # If still too long, only show latest version
-                if len(trimmed) > 3950:
-                    end = matches[1].start()
-                    trimmed = content[start:end].strip()
-
-                await ctx.send(trimmed)
-            else:
-                # Fallback: send full content if parsing fails
-                if len(content) > 3950:
-                    await ctx.send(file=discord.File(patchnotes_path, filename="patchnotes.txt"))
-                else:
-                    await ctx.send(content)
-        except FileNotFoundError:
-            await ctx.send("patchnotes.txt was not found.")
 
     @commands.command(name='play')
     @music_channel_only()
@@ -1299,11 +1283,7 @@ class Music(commands.Cog):
         if mode_normalized not in {"on", "off"}:
             return await ctx.send("Usage: #nightcore on|off")
         
-        # Reset all other effects
-        ctx.voice_state.slowmo = False
-        ctx.voice_state.vaporwave = False
-        ctx.voice_state.reverse = False
-                
+        ctx.voice_state._clear_effects()
         ctx.voice_state.nightcore = mode_normalized == "on"
         state = "enabled" if ctx.voice_state.nightcore else "disabled"
         await ctx.send(f"🎵 Nightcore is now {state}!")
@@ -1319,11 +1299,7 @@ class Music(commands.Cog):
         if mode_normalized not in {"on", "off"}:
             return await ctx.send("Usage: #slowmo on|off")
         
-        # Reset all other effects
-        ctx.voice_state.nightcore = False
-        ctx.voice_state.vaporwave = False
-        ctx.voice_state.reverse = False
-                
+        ctx.voice_state._clear_effects()
         ctx.voice_state.slowmo = mode_normalized == "on"
         state = "enabled" if ctx.voice_state.slowmo else "disabled"
         await ctx.send(f"🐌 Slow-mo is now {state}!")
@@ -1339,11 +1315,7 @@ class Music(commands.Cog):
         if mode_normalized not in {"on", "off"}:
             return await ctx.send("Usage: #vaporwave on|off")
         
-        # Reset all other effects
-        ctx.voice_state.nightcore = False
-        ctx.voice_state.slowmo = False
-        ctx.voice_state.reverse = False
-                
+        ctx.voice_state._clear_effects()
         ctx.voice_state.vaporwave = mode_normalized == "on"
         state = "enabled" if ctx.voice_state.vaporwave else "disabled"
         await ctx.send(f"🌊 Vaporwave is now {state}!")
@@ -1359,16 +1331,7 @@ class Music(commands.Cog):
         if mode_normalized not in {"on", "off"}:
             return await ctx.send("Usage: #reverse on|off")
         
-        # Reset all other effects
-        ctx.voice_state.slowmo = False
-        ctx.voice_state.vaporwave = False
-        ctx.voice_state.reverse = False
-        ctx.voice_state.bass = False
-        ctx.voice_state.lofi = False
-        ctx.voice_state.echo = False
-        ctx.voice_state.tremolo = False
-        ctx.voice_state.fadein = False
-        
+        ctx.voice_state._clear_effects()
         ctx.voice_state.reverse = mode_normalized == "on"
         state = "enabled" if ctx.voice_state.reverse else "disabled"
         await ctx.send(f"⏪ Reverse is now {state}!")
@@ -1384,17 +1347,7 @@ class Music(commands.Cog):
         if mode_normalized not in {"on", "off"}:
             return await ctx.send("Usage: #bass on|off")
         
-        # Reset all other effects
-        ctx.voice_state.nightcore = False
-        ctx.voice_state.slowmo = False
-        ctx.voice_state.vaporwave = False
-        ctx.voice_state.reverse = False
-        ctx.voice_state.bass = False
-        ctx.voice_state.lofi = False
-        ctx.voice_state.echo = False
-        ctx.voice_state.tremolo = False
-        ctx.voice_state.fadein = False
-        
+        ctx.voice_state._clear_effects()
         ctx.voice_state.bass = mode_normalized == "on"
         state = "enabled" if ctx.voice_state.bass else "disabled"
         await ctx.send(f"🔊 Bass boost is now {state}!")
@@ -1410,21 +1363,7 @@ class Music(commands.Cog):
         if mode_normalized not in {"on", "off"}:
             return await ctx.send("Usage: #lofi on|off")
         
-        # Reset all other effects
-        ctx.voice_state.slowmo = False
-        ctx.voice_state.vaporwave = False
-        ctx.voice_state.reverse = False
-        ctx.voice_state.bass = False
-        ctx.voice_state.lofi = False
-        ctx.voice_state.echo = False
-        ctx.voice_state.tremolo = False
-        ctx.voice_state.fadein = False
-        ctx.voice_state.reverse = False
-        ctx.voice_state.bass = False
-        ctx.voice_state.echo = False
-        ctx.voice_state.tremolo = False
-        ctx.voice_state.fadein = False
-        
+        ctx.voice_state._clear_effects()
         ctx.voice_state.lofi = mode_normalized == "on"
         state = "enabled" if ctx.voice_state.lofi else "disabled"
         await ctx.send(f"📻 Lo-fi is now {state}!")
@@ -1440,21 +1379,7 @@ class Music(commands.Cog):
         if mode_normalized not in {"on", "off"}:
             return await ctx.send("Usage: #echo on|off")
         
-        # Reset all other effects
-        ctx.voice_state.slowmo = False
-        ctx.voice_state.vaporwave = False
-        ctx.voice_state.reverse = False
-        ctx.voice_state.bass = False
-        ctx.voice_state.lofi = False
-        ctx.voice_state.echo = False
-        ctx.voice_state.tremolo = False
-        ctx.voice_state.fadein = False
-        ctx.voice_state.reverse = False
-        ctx.voice_state.bass = False
-        ctx.voice_state.lofi = False
-        ctx.voice_state.tremolo = False
-        ctx.voice_state.fadein = False
-        
+        ctx.voice_state._clear_effects()
         ctx.voice_state.echo = mode_normalized == "on"
         state = "enabled" if ctx.voice_state.echo else "disabled"
         await ctx.send(f"🔊 Echo is now {state}!")
@@ -1470,21 +1395,7 @@ class Music(commands.Cog):
         if mode_normalized not in {"on", "off"}:
             return await ctx.send("Usage: #tremolo on|off")
         
-        # Reset all other effects
-        ctx.voice_state.slowmo = False
-        ctx.voice_state.vaporwave = False
-        ctx.voice_state.reverse = False
-        ctx.voice_state.bass = False
-        ctx.voice_state.lofi = False
-        ctx.voice_state.echo = False
-        ctx.voice_state.tremolo = False
-        ctx.voice_state.fadein = False
-        ctx.voice_state.reverse = False
-        ctx.voice_state.bass = False
-        ctx.voice_state.lofi = False
-        ctx.voice_state.echo = False
-        ctx.voice_state.fadein = False
-        
+        ctx.voice_state._clear_effects()
         ctx.voice_state.tremolo = mode_normalized == "on"
         state = "enabled" if ctx.voice_state.tremolo else "disabled"
         await ctx.send(f"🌊 Tremolo is now {state}!")
@@ -1500,340 +1411,60 @@ class Music(commands.Cog):
         if mode_normalized not in {"on", "off"}:
             return await ctx.send("Usage: #fadein on|off")
         
-        # Reset all other effects
-        ctx.voice_state.slowmo = False
-        ctx.voice_state.vaporwave = False
-        ctx.voice_state.reverse = False
-        ctx.voice_state.bass = False
-        ctx.voice_state.lofi = False
-        ctx.voice_state.echo = False
-        ctx.voice_state.tremolo = False
-        ctx.voice_state.fadein = False
-        ctx.voice_state.reverse = False
-        ctx.voice_state.bass = False
-        ctx.voice_state.lofi = False
-        ctx.voice_state.echo = False
-        ctx.voice_state.tremolo = False
-        
+        ctx.voice_state._clear_effects()
         ctx.voice_state.fadein = mode_normalized == "on"
         state = "enabled" if ctx.voice_state.fadein else "disabled"
         await ctx.send(f"🎵 Fade-in is now {state}!")
 
-    
-    @commands.command(name='effects')
-    async def _effects(self, ctx: commands.Context):
-        """Show available audio effects and current status.
+    @commands.command(name='patchnotes')
+    async def _patchnotes(self, ctx: commands.Context):
+        """Show the latest bot patch notes.
 
-        Usage: #effects
+        Usage: #patchnotes
         """
-        embed = discord.Embed(
-            title="🎛️ Audio Effects Studio",
-            description="Fun audio effects to spice up your music!",
-            color=discord.Color.purple()
-        )
-        
-        # Current status
-        active_effects = []
-        if ctx.voice_state.nightcore:
-            active_effects.append("🎵 Nightcore (sped up)")
-        if ctx.voice_state.slowmo:
-            active_effects.append("🐌 Slow-mo (slowed down)")
-        if ctx.voice_state.vaporwave:
-            active_effects.append("🌊 Vaporwave (aesthetic)")
-        if ctx.voice_state.reverse:
-            active_effects.append("⏪ Reverse (backwards)")
-        if ctx.voice_state.bass:
-            active_effects.append("🔊 Bass Boost (heavy bass)")
-        if ctx.voice_state.lofi:
-            active_effects.append("📻 Lo-Fi (crunchy vintage)")
-        if ctx.voice_state.echo:
-            active_effects.append("🔊 Echo Chamber (triple echo)")
-        if ctx.voice_state.tremolo:
-            active_effects.append("🌊 Tremolo (pulsing effect)")
-        if ctx.voice_state.fadein:
-            active_effects.append("🎵 Fade-In (smooth start)")
-                
-        if not active_effects:
-            status = "🎵 No effects active"
-        else:
-            status = "\n".join(active_effects)
-        
-        embed.add_field(name="🎭 Currently Active", value=status, inline=False)
-        
-        # Available effects
-        embed.add_field(
-            name="🎛️ Available Effects",
-            value=(
-                "**#nightcore on/off** - Speed up music (15% faster)\n"
-                "**#slowmo on/off** - Slow down music (15% slower)\n"
-                "**#vaporwave on/off** - Aesthetic slowed + echo\n"
-                "**#reverse on/off** - Play music backwards\n"
-                "**#bass on/off** - Heavy bass boost\n"
-                "**#lofi on/off** - Crunchy vintage sound\n"
-                "**#echo on/off** - Triple echo chamber\n"
-                "**#tremolo on/off** - Pulsing tremolo effect\n"
-                "**#fadein on/off** - Smooth fade-in start"
-            ),
-            inline=False
-        )
-        
-        embed.add_field(
-            name="💡 Party Tips",
-            value=(
-                "• Only one effect can be active at a time\n"
-                "• Effects apply to upcoming songs\n"
-                "• Use #reverse for backmasking fun 🔊\n"
-                "• #slowmo + sad songs = mood maker 😢\n"
-                "• #nightcore for party energy 🎉"
-            ),
-            inline=False
-        )
-        
-        embed.set_footer(text="Experiment with different effects for maximum fun!")
-        
-        await ctx.send(embed=embed)
-
-    @commands.command(name='replay')
-    async def _replay(self, ctx: commands.Context):
-        """Replay the current song from the beginning.
-
-        Usage: #replay
-        """
-        if not ctx.voice_state.current or not ctx.voice_state.voice:
-            return await ctx.send("Nothing is currently playing.")
-        ctx.voice_state.songs.put_front(ctx.voice_state.current)
-        ctx.voice_state.voice.stop()
-        await ctx.message.add_reaction("🔁")
-
-    @commands.command(name='history')
-    async def _history(self, ctx: commands.Context):
-        """Show recently played tracks.
-
-        Usage: #history
-        """
-        if not ctx.voice_state.history:
-            return await ctx.send("No tracks have been played yet.")
-
-        recent = list(reversed(ctx.voice_state.history[-10:]))
-        lines = [f"`{idx}.` **{song.source.title}**" for idx, song in enumerate(recent, start=1)]
-        await ctx.send("Recently played:\n" + "\n".join(lines))
-
-    @commands.command(name='playlist')
-    async def _playlist(self, ctx: commands.Context, action: str = "", *, name: str = ""):
-        """Manage saved playlists.
-
-        Usage: #playlist save mymix
-        Usage: #playlist load mymix
-        Usage: #playlist list
-        """
-        action_key = action.strip().lower()
-        all_playlists = self._read_playlists()
-        guild_key = str(ctx.guild.id)
-
-        if action_key == "list":
-            names = sorted(all_playlists.get(guild_key, {}).keys())
-            if not names:
-                return await ctx.send("No saved playlists yet.")
-            return await ctx.send("Saved playlists: " + ", ".join(names))
-
-        if action_key == "save":
-            playlist_name = name.strip()
-            if not playlist_name:
-                return await ctx.send("Usage: #playlist save <name>")
-
-            entries: list[str] = []
-            if ctx.voice_state.current and ctx.voice_state.current.source.url:
-                entries.append(ctx.voice_state.current.source.url)
-            entries.extend([song.source.url for song in ctx.voice_state.songs if song.source.url])
-            if not entries:
-                return await ctx.send("Queue is empty. Nothing to save.")
-
-            all_playlists.setdefault(guild_key, {})[playlist_name] = entries
-            self._write_playlists(all_playlists)
-            return await ctx.send(f"Saved playlist '{playlist_name}' with {len(entries)} tracks.")
-
-        if action_key == "load":
-            playlist_name = name.strip()
-            if not playlist_name:
-                return await ctx.send("Usage: #playlist load <name>")
-
-            loaded_entries = all_playlists.get(guild_key, {}).get(playlist_name)
-            if not loaded_entries:
-                return await ctx.send(f"Playlist '{playlist_name}' was not found.")
-
-            if not ctx.voice_state.voice:
-                await ctx.invoke(self._join)
-
-            added = 0
-            async with ctx.typing():
-                for item in loaded_entries:
-                    try:
-                        source = await YTDLSource.create_source(
-                            ctx,
-                            item,
-                            loop=asyncio.get_running_loop(),
-                            volume=ctx.voice_state.volume,
-                        )
-                        await ctx.voice_state.songs.put(Song(source))
-                        added += 1
-                    except Exception:
-                        continue
-
-            return await ctx.send(f"Loaded playlist '{playlist_name}' with {added}/{len(loaded_entries)} tracks.")
-
-        await ctx.send("Usage: #playlist save <name> | #playlist load <name> | #playlist list")
-
-    @commands.command(name='votemode', aliases=['vote'])
-    async def _votemode(self, ctx: commands.Context, mode: str):
-        """Enable or disable vote-based skipping.
-
-        Usage: #votemode on
-        Usage: #votemode off
-        Alias: #vote
-        """
-        mode_normalized = mode.strip().lower()
-        if mode_normalized not in {"on", "off"}:
-            return await ctx.send("Usage: #votemode on|off")
-        ctx.voice_state.vote_mode = mode_normalized == "on"
-        state = "enabled" if ctx.voice_state.vote_mode else "disabled"
-        await ctx.send(f"Vote mode is now {state}.")
-
-    @commands.command(name='mood')
-    @music_channel_only()
-    async def _mood(self, ctx: commands.Context, mood: str):
-        """Queue a preset mood-based mini playlist.
-
-        Usage: #mood happy
-        Usage: #mood chill
-        Usage: #mood rage
-        Usage: #mood focus
-        """
-        mood_key = mood.strip().lower()
-        if mood_key not in MOOD_QUERIES:
-            return await ctx.send("Mood options: happy, chill, rage, focus")
-
-        if not ctx.voice_state.voice:
-            await ctx.invoke(self._join)
-
-        added = 0
-        async with ctx.typing():
-            for query in MOOD_QUERIES[mood_key]:
-                try:
-                    source = await YTDLSource.create_source(
-                        ctx,
-                        query,
-                        loop=asyncio.get_running_loop(),
-                        volume=ctx.voice_state.volume,
-                    )
-                    await ctx.voice_state.songs.put(Song(source))
-                    added += 1
-                except Exception:
-                    continue
-
-        await ctx.send(f"Mood '{mood_key}' queued with {added} tracks.")
-
-    @commands.command(name='roastdj')
-    @commands.cooldown(1, 20, commands.BucketType.guild)
-    async def _roastdj(self, ctx: commands.Context, target: Optional[discord.Member] = None):
-        """AI-powered roast of the current DJ and their song choice.
-
-        Usage: #roastdj
-        Usage: #roastdj @user
-        """
-        if not ctx.voice_state.current:
-            return await ctx.send("🎤 Thou art not even in a voice channel. The Bard hath no song to mock.")
-
-        roast_target = target or ctx.voice_state.current.requester or ctx.author
-        song_title = ctx.voice_state.current.source.title
-        uploader = ctx.voice_state.current.source.uploader or "an unknown minstrel"
-
-        if self._ai_quota_check():
-            return await ctx.send(f"{roast_target.mention}, {random.choice(DJ_ROASTS)}")
-
-        if not gemini_model or not self._check_ai_limit(ctx.author.id):
-            return await ctx.send(f"{roast_target.mention}, {random.choice(DJ_ROASTS)}")
-
-        warning = self._warn_if_approaching_limit(ctx.author.id)
-        if warning:
-            await ctx.send(warning)
-
         try:
-            roast_prompt = (
-                f"The current DJ is '{roast_target.display_name}' and they just queued "
-                f"'{song_title}' by '{uploader}'.\n\n"
-                f"Deliver a single sharp, witty roast in your bardic voice — mock their taste in music specifically. "
-                f"Address them directly. Keep it to 2-3 sentences maximum. No QUEUE_SONGS line needed."
-            )
-            response_text = generate_content_with_fallback(roast_prompt, system_instruction=BARD_SYSTEM_PROMPT)
-            self._track_ai_usage(ctx.author.id)
-            await ctx.send(f"🎶 {roast_target.mention}, {response_text.strip()}")
-        except Exception:
-            await ctx.send(f"{roast_target.mention}, {random.choice(DJ_ROASTS)}")
+            patchnotes_path = os.path.join(os.path.dirname(__file__), "patchnotes.txt")
+            with open(patchnotes_path, encoding="utf-8") as f:
+                content = f.read()
 
-    @commands.command(name='stats')
-    async def _stats(self, ctx: commands.Context):
-        """Show bot and player stats.
+            # Parse version sections (headers like "v3.0", "v2.4", etc.)
+            version_pattern = re.compile(r'^(v\d+\.\d+.*)$', re.MULTILINE)
+            matches = list(version_pattern.finditer(content))
 
-        Usage: #stats
-        """
-        uptime_seconds = int(time.monotonic() - BOT_START_TIME)
-        history_count = len(ctx.voice_state.history)
-        queued = len(ctx.voice_state.songs)
-        now_playing = ctx.voice_state.current.source.title if ctx.voice_state.current else "Nothing"
+            if len(matches) >= 2:
+                # Extract first two version sections (most recent)
+                start = matches[0].start()
+                end = matches[2].start() if len(matches) > 2 else len(content)
+                trimmed = content[start:end].strip()
 
-        embed = (
-            discord.Embed(title="Bot Stats", color=discord.Color.blurple())
-            .add_field(name="Uptime", value=format_clock(uptime_seconds), inline=True)
-            .add_field(name="Songs Played", value=str(ctx.voice_state.songs_played), inline=True)
-            .add_field(name="Queue Length", value=str(queued), inline=True)
-            .add_field(name="History Size", value=str(history_count), inline=True)
-            .add_field(name="Vote Mode", value="On" if ctx.voice_state.vote_mode else "Off", inline=True)
-            .add_field(name="Nightcore", value="On" if ctx.voice_state.nightcore else "Off", inline=True)
-            .add_field(name="Now Playing", value=now_playing, inline=False)
-        )
-        await ctx.send(embed=embed)
+                # If still too long, only show latest version
+                if len(trimmed) > 3950:
+                    end = matches[1].start()
+                    trimmed = content[start:end].strip()
 
-    @commands.command(name='nowbar')
-    async def _nowbar(self, ctx: commands.Context):
-        """Show a progress bar for the current track.
+                if len(trimmed) <= 1900:
+                    await ctx.send(trimmed)
+                else:
+                    chunks = [trimmed[i:i+1900] for i in range(0, len(trimmed), 1900)]
+                    for chunk in chunks:
+                        await ctx.send(chunk)
+            else:
+                # Fallback: send full content if parsing fails
+                if len(content) > 3950:
+                    await ctx.send(file=discord.File(patchnotes_path, filename="patchnotes.txt"))
+                else:
+                    await ctx.send(content)
+        except FileNotFoundError:
+            await ctx.send("patchnotes.txt was not found.")
 
-        Usage: #nowbar
-        """
-        if not ctx.voice_state.current:
-            return await ctx.send("Nothing is currently playing.")
-
-        duration = int(ctx.voice_state.current.source.duration_seconds or 0)
-        if duration <= 0:
-            return await ctx.send("This track is live or has unknown duration.")
-
-        elapsed = 0
-        if ctx.voice_state.current_started_at is not None:
-            elapsed = int(time.monotonic() - ctx.voice_state.current_started_at)
-        elapsed = max(0, min(elapsed, duration))
-
-        bar_len = 20
-        progress = elapsed / duration if duration else 0
-        filled = int(progress * bar_len)
-        bar = "█" * filled + "-" * (bar_len - filled)
-
-        await ctx.send(
-            f"Now Playing: **{ctx.voice_state.current.source.title}**\n"
-            f"`{bar}` {format_clock(elapsed)} / {format_clock(duration)}"
-        )
-
-    @commands.command(name='play_spotify')
-    async def _play_spotify(self, ctx: commands.Context):
-        """Placeholder command for Spotify direct playback.
-
-        Usage: #play_spotify
-        Notes: Not currently implemented.
-        """
-        await ctx.send('This feature is currently not available. It is in development, check back later!')
-
-        for _ in range(6):
-            emoji = random_guild_emoji(ctx.guild)
-            if emoji:
-                await ctx.message.add_reaction(emoji)
+    def _track_ai_usage(self, user_id: int):
+        """Track AI usage for rate limiting."""
+        today = datetime.now().date()
+        if today not in AI_USAGE:
+            AI_USAGE[today] = {}
+            for stale_key in [k for k in AI_USAGE if k != today]:
+                del AI_USAGE[stale_key]
+        AI_USAGE[today][user_id] = AI_USAGE[today].get(user_id, 0) + 1
 
     @commands.command(name='usage')
     async def _usage(self, ctx: commands.Context):
@@ -1902,7 +1533,7 @@ class Music(commands.Cog):
             value=(
                 "**#ask What's the meaning of life?** - Ask AI anything\n"
                 "**#dj Suggest study music** - AI music recommendations\n"
-                "**#chat** - Start private AI conversation\n"
+                "**#bard play me something for a rainy day** - AI queues songs for you\n"
                 "**#aistats** - Check your AI usage limits"
             ),
             inline=False
@@ -1924,97 +1555,34 @@ class Music(commands.Cog):
 
         await ctx.send(embed=embed)
 
-    def _is_music_active(self, ctx: commands.Context) -> bool:
-        """Return True if music is currently playing, paused, or queued."""
+    @commands.command(name='effects')
+    async def _effects(self, ctx: commands.Context):
+        """Show all available audio effects and their current state.
+
+        Usage: #effects
+        """
         vs = ctx.voice_state
-        if vs.current is not None:
-            return True
-        if len(vs.songs) > 0:
-            return True
-        if vs.voice and vs.voice.is_paused():
-            return True
-        return False
-
-    def _ai_quota_check(self) -> bool:
-        """Return True if Gemini is currently hard-blocked due to quota exhaustion.
-        Automatically clears the block after QUOTA_RETRY_SECONDS."""
-        global _gemini_quota_exhausted_at
-        if _gemini_quota_exhausted_at is None:
-            return False
-        if time.monotonic() - _gemini_quota_exhausted_at >= QUOTA_RETRY_SECONDS:
-            _gemini_quota_exhausted_at = None
-            return False
-        return True
-
-    def _warn_if_approaching_limit(self, user_id: int) -> Optional[str]:
-        """Return a warning string if the user or global pool is running low, else None."""
-        today = datetime.now().date()
-        if today not in AI_USAGE:
-            return None
-        user_requests = AI_USAGE[today].get(user_id, 0)
-        total_requests = sum(AI_USAGE[today].values())
-        remaining_user = max(0, 50 - user_requests)
-        remaining_total = max(0, DAILY_LIMIT - total_requests)
-        if remaining_user <= 5:
-            return f"⚠️ *Hark — thou hast but {remaining_user} verse(s) remaining today, good traveler.*"
-        if remaining_total <= 50:
-            return f"⚠️ *The realm's collective bardic power runs low — only {remaining_total} request(s) remain today.*"
-        return None
-
-    # AI Helper Functions
-    def _check_ai_limit(self, user_id: int) -> bool:
-        """Check if user is within AI usage limits."""
-        today = datetime.now().date()
-        if today not in AI_USAGE:
-            AI_USAGE[today] = {}
-        
-        user_requests = AI_USAGE[today].get(user_id, 0)
-        total_requests = sum(AI_USAGE[today].values())
-        
-        return user_requests < 50 and total_requests < DAILY_LIMIT
-
-    def _track_ai_usage(self, user_id: int):
-        """Track AI usage for rate limiting."""
-        today = datetime.now().date()
-        if today not in AI_USAGE:
-            AI_USAGE[today] = {}
-        
-        AI_USAGE[today][user_id] = AI_USAGE[today].get(user_id, 0) + 1
-
-    def _get_music_context(self, ctx: commands.Context) -> str:
-        """Get current music context for AI responses."""
-        context = ""
-        if ctx.voice_state:
-            if ctx.voice_state.current:
-                context += f"Currently playing: {ctx.voice_state.current.source.title}\n"
-            
-            if len(ctx.voice_state.songs) > 0:
-                next_songs = [song.source.title for song in list(ctx.voice_state.songs)[:3]]
-                context += f"Up next: {', '.join(next_songs)}\n"
-            
-            if ctx.voice_state.nightcore:
-                context += "Audio effect: Nightcore (sped up)\n"
-            elif ctx.voice_state.slowmo:
-                context += "Audio effect: Slow-mo (slowed down)\n"
-            elif ctx.voice_state.vaporwave:
-                context += "Audio effect: Vaporwave (aesthetic)\n"
-            elif ctx.voice_state.reverse:
-                context += "Audio effect: Reverse (backwards)\n"
-            elif ctx.voice_state.bass:
-                context += "Audio effect: Bass Boost (heavy bass)\n"
-            elif ctx.voice_state.lofi:
-                context += "Audio effect: Lo-Fi (crunchy vintage)\n"
-            elif ctx.voice_state.echo:
-                context += "Audio effect: Echo Chamber (triple echo)\n"
-            elif ctx.voice_state.tremolo:
-                context += "Audio effect: Tremolo (pulsing effect)\n"
-            elif ctx.voice_state.fadein:
-                context += "Audio effect: Fade-In (smooth start)\n"
-        
-        return context
+        effects = [
+            ("Nightcore",  vs.nightcore, "Speed up (+15%)"),
+            ("Slow-mo",    vs.slowmo,    "Slow down (-15%)"),
+            ("Vaporwave",  vs.vaporwave, "Slowed + echo aesthetic"),
+            ("Reverse",    vs.reverse,   "Play backwards"),
+            ("Bass Boost", vs.bass,      "Heavy bass boost"),
+            ("Lo-Fi",      vs.lofi,      "Crunchy vintage sound"),
+            ("Echo",       vs.echo,      "Triple echo chamber"),
+            ("Tremolo",    vs.tremolo,   "Pulsing tremolo"),
+            ("Fade-In",    vs.fadein,    "Smooth 3s fade-in"),
+        ]
+        lines = "\n".join(
+            f"{'✅' if active else '⬜'} **{name}** — {desc}"
+            for name, active, desc in effects
+        )
+        embed = discord.Embed(title="🎛️ Audio Effects", description=lines, color=discord.Color.purple())
+        embed.set_footer(text="Use #<effect> on|off to toggle. Only one effect is active at a time.")
+        await ctx.send(embed=embed)
 
     @commands.command(name='ask')
-    @commands.cooldown(1, 30, commands.BucketType.user)  # 1 request per 30 seconds per user
+    @commands.cooldown(1, 30, commands.BucketType.user)
     async def _ask(self, ctx: commands.Context, *, question: str):
         """Ask the AI a question.
 
@@ -2042,34 +1610,25 @@ class Music(commands.Cog):
 
         try:
             await ctx.send("🤔 Thinking...")
-            
-            # Get music context for more relevant responses
             music_context = self._get_music_context(ctx)
-            if music_context:
-                enhanced_question = f"Music Context: {music_context}\n\nUser Question: {question}"
-            else:
-                enhanced_question = question
-            
+            enhanced_question = f"Music Context: {music_context}\n\nUser Question: {question}" if music_context else question
             response_text = generate_content_with_fallback(enhanced_question, system_instruction=BARD_SYSTEM_PROMPT)
             self._track_ai_usage(ctx.author.id)
-            
-            # Split long responses to meet Discord's 2000 character limit
             if len(response_text) <= 1900:
                 await ctx.send(f"🎶 **Joe Barden the Bard says:**\n{response_text}")
             else:
-                # Split into chunks
                 chunks = [response_text[i:i+1900] for i in range(0, len(response_text), 1900)]
                 for i, chunk in enumerate(chunks):
                     if i == 0:
                         await ctx.send(f"🎶 **Joe Barden the Bard says (part {i+1}/{len(chunks)}):**\n{chunk}")
                     else:
                         await ctx.send(f"🎶 **Part {i+1}/{len(chunks)}:**\n{chunk}")
-                        await asyncio.sleep(1)  # Small delay between chunks
-                    
+                        await asyncio.sleep(1)
         except GeminiQuotaError:
             await ctx.send(BARD_QUOTA_MESSAGE)
         except Exception as e:
-            await ctx.send(f"❌ AI error: {str(e)}")
+            print(f"❌ [ask] Unhandled AI error for user {ctx.author} ({ctx.author.id}): {type(e).__name__}: {e}")
+            await ctx.send("❌ *The Bard clutches his lute and stares blankly.* Mine tongue hath failed me — please try again in a moment.")
 
     @commands.command(name='dj')
     @commands.cooldown(1, 60, commands.BucketType.user)
@@ -2127,7 +1686,8 @@ If the user is asking for song recommendations or requesting you queue music, in
         except GeminiQuotaError:
             await ctx.send(BARD_QUOTA_MESSAGE)
         except Exception as e:
-            await ctx.send(f"❌ DJ AI error: {str(e)}")
+            print(f"❌ [dj] Unhandled AI error for user {ctx.author} ({ctx.author.id}): {type(e).__name__}: {e}")
+            await ctx.send("❌ *The Bard's DJ set hath been interrupted by unseen forces.* Prithee try again shortly.")
 
     @commands.command(name='aistats')
     async def _aistats(self, ctx: commands.Context):
@@ -2159,6 +1719,324 @@ If the user is asking for song recommendations or requesting you queue music, in
             embed.add_field(name="⚠️ Notice", value="You're running low on requests!", inline=False)
         
         await ctx.send(embed=embed)
+
+    @commands.command(name='replay')
+    async def _replay(self, ctx: commands.Context):
+        """Replay the current track from the beginning.
+
+        Usage: #replay
+        """
+        if not ctx.voice_state.current:
+            return await ctx.send('Nothing is currently playing.')
+
+        ctx.voice_state.songs.put_front(Song(ctx.voice_state.current.source))
+        ctx.voice_state.skip()
+        await ctx.message.add_reaction('🔄')
+
+    @commands.command(name='history')
+    async def _history(self, ctx: commands.Context):
+        """Show recently played tracks.
+
+        Usage: #history
+        """
+        if not ctx.voice_state.history:
+            return await ctx.send('No history yet.')
+
+        lines = '\n'.join(
+            f'`{i}.` {s.source.title}'
+            for i, s in enumerate(reversed(ctx.voice_state.history), start=1)
+        )
+        embed = discord.Embed(title="🕘 Recently Played", description=lines, color=discord.Color.dark_gold())
+        await ctx.send(embed=embed)
+
+    @commands.command(name='playlist')
+    async def _playlist(self, ctx: commands.Context, action: str, *, name: str = ""):
+        """Manage saved playlists.
+
+        Usage: #playlist save <name>
+        Usage: #playlist load <name>
+        Usage: #playlist list
+        Usage: #playlist delete <name>
+        """
+        action = action.lower().strip()
+        uid = str(ctx.author.id)
+        data = self._read_playlists()
+
+        if action == "list":
+            user_playlists = data.get(uid, {})
+            if not user_playlists:
+                return await ctx.send("You have no saved playlists.")
+            names = ", ".join(f"`{n}`" for n in user_playlists)
+            return await ctx.send(f"Your playlists: {names}")
+
+        if not name:
+            return await ctx.send(f"Usage: #playlist {action} <name>")
+
+        if action == "save":
+            if not ctx.voice_state.current and len(ctx.voice_state.songs) == 0:
+                return await ctx.send("Nothing in the queue to save.")
+            tracks: list[str] = []
+            if ctx.voice_state.current:
+                tracks.append(ctx.voice_state.current.source.url or ctx.voice_state.current.source.title)
+            for song in ctx.voice_state.songs:
+                tracks.append(song.source.url or song.source.title)
+            if uid not in data:
+                data[uid] = {}
+            data[uid][name] = tracks
+            self._write_playlists(data)
+            return await ctx.send(f"✅ Saved **{name}** ({len(tracks)} tracks).")
+
+        if action == "load":
+            tracks = data.get(uid, {}).get(name)
+            if not tracks:
+                return await ctx.send(f"No playlist named **{name}**.")
+            if not ctx.voice_state.voice:
+                await ctx.invoke(self._join)
+            added = 0
+            async with ctx.typing():
+                for query in tracks:
+                    try:
+                        source = await YTDLSource.create_source(
+                            ctx, query, loop=asyncio.get_running_loop(), volume=ctx.voice_state.volume
+                        )
+                        await ctx.voice_state.songs.put(Song(source))
+                        added += 1
+                    except Exception:
+                        continue
+            return await ctx.send(f"✅ Loaded **{name}** — {added}/{len(tracks)} tracks queued.")
+
+        if action == "delete":
+            if uid in data and name in data[uid]:
+                del data[uid][name]
+                self._write_playlists(data)
+                return await ctx.send(f"🗑️ Deleted playlist **{name}**.")
+            return await ctx.send(f"No playlist named **{name}**.")
+
+        await ctx.send("Unknown action. Use: save | load | list | delete")
+
+    @commands.command(name='votemode')
+    async def _votemode(self, ctx: commands.Context, mode: str):
+        """Enable or disable vote-skip mode.
+
+        Usage: #votemode on|off
+        """
+        mode_normalized = mode.strip().lower()
+        if mode_normalized not in {"on", "off"}:
+            return await ctx.send("Usage: #votemode on|off")
+
+        ctx.voice_state.vote_mode = mode_normalized == "on"
+        state = "enabled" if ctx.voice_state.vote_mode else "disabled"
+        await ctx.send(f"🗳️ Vote-skip mode is now {state}.")
+
+    @commands.command(name='mood')
+    @music_channel_only()
+    async def _mood(self, ctx: commands.Context, *, mood: str):
+        """Queue a preset mood playlist.
+
+        Usage: #mood happy|chill|rage|focus
+        """
+        mood_key = mood.lower().strip()
+        playlist = MOOD_QUERIES.get(mood_key)
+        if not playlist:
+            available = ", ".join(f"`{k}`" for k in MOOD_QUERIES)
+            return await ctx.send(f"Unknown mood. Available: {available}")
+
+        if not ctx.voice_state.voice:
+            await ctx.invoke(self._join)
+
+        added = 0
+        async with ctx.typing():
+            for query in playlist:
+                try:
+                    source = await YTDLSource.create_source(
+                        ctx, query, loop=asyncio.get_running_loop(), volume=ctx.voice_state.volume
+                    )
+                    await ctx.voice_state.songs.put(Song(source))
+                    added += 1
+                except Exception:
+                    continue
+
+        await ctx.send(f"🎵 Queued **{added}** tracks for mood: **{mood_key}**!")
+
+    @commands.command(name='roastdj')
+    @commands.cooldown(1, 60, commands.BucketType.guild)
+    async def _roastdj(self, ctx: commands.Context, roast_target: discord.Member = None):
+        """Generate an AI-powered roast of the current DJ.
+
+        Usage: #roastdj
+        Usage: #roastdj @user
+        """
+        if roast_target is None:
+            if ctx.voice_state.current:
+                roast_target = ctx.voice_state.current.requester
+            else:
+                roast_target = ctx.author
+
+        if not gemini_model or self._ai_quota_check():
+            return await ctx.send(f"{roast_target.mention}, {random.choice(DJ_ROASTS)}")
+
+        try:
+            current_track = ctx.voice_state.current.source.title if ctx.voice_state.current else "some questionable music"
+            roast_prompt = (
+                f'Generate a short, funny, light-hearted roast (under 200 characters) of a Discord DJ '
+                f'named {roast_target.display_name} who is currently playing "{current_track}". '
+                f'Be creative and musical-themed.'
+            )
+            roast_text = generate_content_with_fallback(roast_prompt, system_instruction=BARD_SYSTEM_PROMPT)
+            await ctx.send(f"{roast_target.mention}, {roast_text}")
+        except GeminiQuotaError:
+            await ctx.send(f"{roast_target.mention}, {random.choice(DJ_ROASTS)}")
+        except Exception as e:
+            print(f"❌ [roastdj] Unhandled AI error for user {ctx.author} ({ctx.author.id}): {type(e).__name__}: {e}")
+            await ctx.send(f"{roast_target.mention}, {random.choice(DJ_ROASTS)}")
+
+    @commands.command(name='stats')
+    async def _stats(self, ctx: commands.Context):
+        """Show bot and player stats.
+
+        Usage: #stats
+        """
+        uptime_seconds = int(time.monotonic() - BOT_START_TIME)
+        history_count = len(ctx.voice_state.history)
+        queued = len(ctx.voice_state.songs)
+        now_playing = ctx.voice_state.current.source.title if ctx.voice_state.current else "Nothing"
+
+        embed = (
+            discord.Embed(title="Bot Stats", color=discord.Color.blurple())
+            .add_field(name="Uptime", value=format_clock(uptime_seconds), inline=True)
+            .add_field(name="Songs Played", value=str(ctx.voice_state.songs_played), inline=True)
+            .add_field(name="Queue Length", value=str(queued), inline=True)
+            .add_field(name="History Size", value=str(history_count), inline=True)
+            .add_field(name="Vote Mode", value="On" if ctx.voice_state.vote_mode else "Off", inline=True)
+            .add_field(name="Active Effect", value=(
+                "Nightcore" if ctx.voice_state.nightcore else
+                "Slow-mo"   if ctx.voice_state.slowmo   else
+                "Vaporwave" if ctx.voice_state.vaporwave else
+                "Reverse"   if ctx.voice_state.reverse   else
+                "Bass Boost"if ctx.voice_state.bass      else
+                "Lo-Fi"     if ctx.voice_state.lofi      else
+                "Echo"      if ctx.voice_state.echo      else
+                "Tremolo"   if ctx.voice_state.tremolo   else
+                "Fade-In"   if ctx.voice_state.fadein    else
+                "None"
+            ), inline=True)
+            .add_field(name="Now Playing", value=now_playing, inline=False)
+        )
+        await ctx.send(embed=embed)
+
+    @commands.command(name='nowbar')
+    async def _nowbar(self, ctx: commands.Context):
+        """Show a progress bar for the current track.
+
+        Usage: #nowbar
+        """
+        if not ctx.voice_state.current:
+            return await ctx.send("Nothing is currently playing.")
+
+        duration = int(ctx.voice_state.current.source.duration_seconds or 0)
+        if duration <= 0:
+            return await ctx.send("This track is live or has unknown duration.")
+
+        elapsed = 0
+        if ctx.voice_state.current_started_at is not None:
+            elapsed = int(time.monotonic() - ctx.voice_state.current_started_at)
+        elapsed = max(0, min(elapsed, duration))
+
+        bar_len = 20
+        filled = int((elapsed / duration) * bar_len)
+        bar = "█" * filled + "-" * (bar_len - filled)
+
+        await ctx.send(
+            f"Now Playing: **{ctx.voice_state.current.source.title}**\n"
+            f"`{bar}` {format_clock(elapsed)} / {format_clock(duration)}"
+        )
+
+    @commands.command(name='play_spotify')
+    async def _play_spotify(self, ctx: commands.Context):
+        """Placeholder command for Spotify direct playback (not yet implemented).
+
+        Usage: #play_spotify
+        """
+        await ctx.send('This feature is currently not available. It is in development, check back later!')
+
+        for _ in range(6):
+            emoji = random_guild_emoji(ctx.guild)
+            if emoji:
+                await ctx.message.add_reaction(emoji)
+
+    def _is_music_active(self, ctx: commands.Context) -> bool:
+        """Return True if music is currently playing, paused, or queued."""
+        vs = ctx.voice_state
+        if vs.current is not None:
+            return True
+        if len(vs.songs) > 0:
+            return True
+        if vs.voice and vs.voice.is_paused():
+            return True
+        return False
+
+    def _ai_quota_check(self) -> bool:
+        """Return True if Gemini is hard-blocked due to quota exhaustion."""
+        global _gemini_quota_exhausted_at
+        if _gemini_quota_exhausted_at is None:
+            return False
+        if time.monotonic() - _gemini_quota_exhausted_at >= QUOTA_RETRY_SECONDS:
+            _gemini_quota_exhausted_at = None
+            return False
+        return True
+
+    def _warn_if_approaching_limit(self, user_id: int) -> Optional[str]:
+        """Return a warning string if the user or global pool is running low, else None."""
+        today = datetime.now().date()
+        if today not in AI_USAGE:
+            return None
+        user_requests = AI_USAGE[today].get(user_id, 0)
+        total_requests = sum(AI_USAGE[today].values())
+        remaining_user = max(0, 50 - user_requests)
+        remaining_total = max(0, DAILY_LIMIT - total_requests)
+        if remaining_user <= 5:
+            return f"⚠️ *Hark — thou hast but {remaining_user} verse(s) remaining today, good traveler.*"
+        if remaining_total <= 50:
+            return f"⚠️ *The realm's collective bardic power runs low — only {remaining_total} request(s) remain today.*"
+        return None
+
+    def _check_ai_limit(self, user_id: int) -> bool:
+        """Check if user is within AI usage limits. Returns True if within limits."""
+        today = datetime.now().date()
+        if today not in AI_USAGE:
+            AI_USAGE[today] = {}
+        user_requests = AI_USAGE[today].get(user_id, 0)
+        total_requests = sum(AI_USAGE[today].values())
+        return user_requests < 50 and total_requests < DAILY_LIMIT
+
+    def _get_music_context(self, ctx: commands.Context) -> str:
+        """Get current music context string for AI prompts."""
+        context = ""
+        if ctx.voice_state:
+            if ctx.voice_state.current:
+                context += f"Currently playing: {ctx.voice_state.current.source.title}\n"
+            if len(ctx.voice_state.songs) > 0:
+                next_songs = [song.source.title for song in list(ctx.voice_state.songs)[:3]]
+                context += f"Up next: {', '.join(next_songs)}\n"
+            if ctx.voice_state.nightcore:
+                context += "Audio effect: Nightcore (sped up)\n"
+            elif ctx.voice_state.slowmo:
+                context += "Audio effect: Slow-mo (slowed down)\n"
+            elif ctx.voice_state.vaporwave:
+                context += "Audio effect: Vaporwave (aesthetic)\n"
+            elif ctx.voice_state.reverse:
+                context += "Audio effect: Reverse (backwards)\n"
+            elif ctx.voice_state.bass:
+                context += "Audio effect: Bass Boost (heavy bass)\n"
+            elif ctx.voice_state.lofi:
+                context += "Audio effect: Lo-Fi (crunchy vintage)\n"
+            elif ctx.voice_state.echo:
+                context += "Audio effect: Echo Chamber (triple echo)\n"
+            elif ctx.voice_state.tremolo:
+                context += "Audio effect: Tremolo (pulsing effect)\n"
+            elif ctx.voice_state.fadein:
+                context += "Audio effect: Fade-In (smooth start)\n"
+        return context
 
     @commands.command(name='bard')
     @music_channel_only()
@@ -2250,7 +2128,8 @@ Then provide QUEUE_SONGS with 3-5 real, searchable song titles that match the re
         except GeminiQuotaError:
             await ctx.send(BARD_QUOTA_MESSAGE)
         except Exception as e:
-            await ctx.send(f"❌ The Bard tripped over his lute: {str(e)}")
+            print(f"❌ [bard] Unhandled AI error for user {ctx.author} ({ctx.author.id}): {type(e).__name__}: {e}")
+            await ctx.send("❌ *The Bard tripped over his lute and everything went dark.* Prithee try again in a moment.")
 
     @commands.command(name='shit', aliases=['tourette', 'fuck', 'youdonottellme'])
     async def _shit(self, ctx: commands.Context):

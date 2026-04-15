@@ -1,3 +1,24 @@
+v3.0 BETA
+
+Summary
+- Bug fixes, stability improvements, and full restoration of previously broken commands.
+
+🐛 BUG FIXES
+- Fixed: All 9 audio effect commands now call _clear_effects() before toggling — ensures only one effect is active at a time (previously nightcore/slowmo/vaporwave each reset only 3 of 9 effects; lofi/echo/tremolo/fadein had duplicate assignments).
+- Fixed: #patchnotes now chunks output in 1900-char blocks so long notes never exceed Discord's 2000-char limit.
+- Fixed: cog_command_error no longer exposes raw exception strings to Discord; all errors return user-friendly messages and log internally.
+- Fixed: #usage no longer lists the removed #chat command.
+- Fixed: _write_playlists now has try/except — disk failures are logged and re-raised instead of silently discarded.
+- Fixed: #stats Active Effect field now reflects all 9 effects (was hardcoded to only detect Nightcore).
+
+⚡ IMPROVEMENTS
+- AI_USAGE dict now prunes stale date keys when a new day starts, preventing unbounded memory growth.
+- #effects command rewritten as a live embed showing each effect's on/off state.
+- All AI helper methods (_is_music_active, _ai_quota_check, _warn_if_approaching_limit, _check_ai_limit, _get_music_context) fully restored.
+
+🔧 RESTORED COMMANDS (code corruption recovery)
+- Restored: #replay, #history, #playlist, #votemode, #mood, #roastdj, #stats, #nowbar, #play_spotify, #ask, #dj, #bard, and all related AI helper methods.
+
 v2.6 BETA
 
 Summary
