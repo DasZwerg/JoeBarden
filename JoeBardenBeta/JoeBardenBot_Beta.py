@@ -1710,18 +1710,35 @@ class Music(commands.Cog):
         await ctx.send(f"Mood '{mood_key}' queued with {added} tracks.")
 
     @commands.command(name='roastdj')
+    @commands.cooldown(1, 20, commands.BucketType.guild)
     async def _roastdj(self, ctx: commands.Context, target: Optional[discord.Member] = None):
-        """Roast the current DJ or a tagged user.
+        """AI-powered roast of the current DJ and their song choice.
 
         Usage: #roastdj
         Usage: #roastdj @user
         """
-        roast_target = target
-        if roast_target is None and ctx.voice_state.current:
-            roast_target = ctx.voice_state.current.requester
-        if roast_target is None:
-            roast_target = ctx.author
-        await ctx.send(f"{roast_target.mention}, {random.choice(DJ_ROASTS)}")
+        if not ctx.voice_state.current:
+            return await ctx.send("🎤 Thou art not even in a voice channel. The Bard hath no song to mock.")
+
+        roast_target = target or ctx.voice_state.current.requester or ctx.author
+        song_title = ctx.voice_state.current.source.title
+        uploader = ctx.voice_state.current.source.uploader or "an unknown minstrel"
+
+        if not gemini_model or not self._check_ai_limit(ctx.author.id):
+            return await ctx.send(f"{roast_target.mention}, {random.choice(DJ_ROASTS)}")
+
+        try:
+            roast_prompt = (
+                f"The current DJ is '{roast_target.display_name}' and they just queued "
+                f"'{song_title}' by '{uploader}'.\n\n"
+                f"Deliver a single sharp, witty roast in your bardic voice — mock their taste in music specifically. "
+                f"Address them directly. Keep it to 2-3 sentences maximum. No QUEUE_SONGS line needed."
+            )
+            response_text = generate_content_with_fallback(roast_prompt, system_instruction=BARD_SYSTEM_PROMPT)
+            self._track_ai_usage(ctx.author.id)
+            await ctx.send(f"🎶 {roast_target.mention}, {response_text.strip()}")
+        except Exception:
+            await ctx.send(f"{roast_target.mention}, {random.choice(DJ_ROASTS)}")
 
     @commands.command(name='stats')
     async def _stats(self, ctx: commands.Context):
