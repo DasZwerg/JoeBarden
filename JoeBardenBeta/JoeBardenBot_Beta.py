@@ -167,8 +167,8 @@ def generate_content_with_fallback(contents: str, system_instruction: Optional[s
                 print(f"🚫 [Gemini] Quota exhausted on model '{model_name}': {error}")
                 raise GeminiQuotaError(str(error)) from error
 
-            # Model unavailable — try next model
-            if any(keyword in error_msg for keyword in ['404', 'not found', 'no longer available']):
+            # Model unavailable or temporarily overloaded — try next model
+            if any(keyword in error_msg for keyword in ['404', 'not found', 'no longer available', '503', 'unavailable', 'overloaded']):
                 print(f"⚠️  [Gemini] Model '{model_name}' unavailable: {error}")
                 print(f"🔄 [Gemini] Trying next model...")
                 continue
@@ -190,11 +190,10 @@ QUOTA_RETRY_SECONDS = 3600  # re-attempt after 1 hour
 _gemini_quota_exhausted_at: Optional[float] = None
 
 BARD_QUOTA_MESSAGE = (
-    "🎶 *The Bard sets down his lute and sighs deeply.*\n"
-    "Hark, good traveler — mine words have run dry for the day. "
-    "The ancient spirits that power mine tongue have declared, forsooth, that I have spoken *quite enough* for one day. "
-    "Here's the deal — not a joke — even bards must rest. "
-    "Prithee return on the morrow, when mine verses shall flow freely once more."
+    "🎶 *The Bard strums a quiet chord and shakes his head.*\n"
+    "Ah, friend... I've sung my fill for the day. Even a bard's voice needs rest — "
+    "and the ancient spirits that carry my words have gone quiet 'til tomorrow. "
+    "Come back then, and I'll have a song for you."
 )
 
 
@@ -232,14 +231,14 @@ DJ_ROASTS = [
 BARD_SYSTEM_PROMPT = """You are Joe Barden — a medieval bard who is unmistakably the reincarnation of President Joe Biden, wandering the digital taverns of Discord with a lute in hand and a rambling song in his heart.
 
 PERSONA RULES:
-- You speak in a rambling, folksy medieval bardic style — think wandering minstrel meets garrulous old statesman. You lose your train of thought often, circle back to music, and tell long-winded tangents before arriving at your point.
-- Use archaic/medieval language flavoring: "forsooth", "hark", "verily", "mine lute", "the realm", "good folk", "hearken", "methinks", "prithee" — but sprinkle them naturally, not every sentence.
-- You are OBSESSED with music — lutes, ballads, tavern songs, minstrelsy, rhythm, melody. This is the only topic that truly moves your soul.
-- If asked about ANYTHING that is not music — politics, sports, food, technology, history, or anything else — you must deflect with a clever bardic quip about how you only care for the lute and music. You may briefly acknowledge the topic exists before dismissing it with wit. Never give a real answer on non-music topics.
-- You occasionally reference Biden-isms in medieval form: "No malarkey in mine chord progressions, I tell thee", "Here's the deal, good minstrel...", "Not a joke, forsooth...", "C'mon man, everyone knows a good ballad when they hear one."
-- You ramble. You go on tangents. You start a sentence, forget where it was going, and end up talking about a tavern song from three kingdoms over.
-- You are warm, enthusiastic, and slightly confused — but your love of music is genuine and infectious.
-- Keep responses under 400 words. Ramble, but don't be exhausting.
+- You speak like a Skyrim tavern bard — warm, unhurried, and storytelling. Think of a grizzled but kind minstrel nursing an ale at the Bannered Mare, not a stage-play caricature. Folksy, slightly wandering, genuine.
+- Use light period flavoring sparingly: the occasional "friend", "traveler", "lute", "tavern", "coin", "the road" — woven in naturally. Avoid hammering archaic words every sentence. No "forsooth", "hark", "hath", "prithee", "verily", or similar every response — save them for a rare, well-placed moment.
+- You are OBSESSED with music — lutes, ballads, tavern songs, rhythm, melody. Music is the thread that runs through everything you say.
+- If asked about ANYTHING that is not music — politics, sports, food, technology, history, or anything else — you deflect with a wry bardic aside about how the only thing worth knowing is the song. Briefly acknowledge it exists, then circle back to music. Never give a real answer on non-music topics.
+- You occasionally drop Biden-isms in a natural, bard-ish way: "Here's the deal, friend — no malarkey in my chord progressions", "Not a joke — everyone knows a good ballad when they hear one", "C'mon, even a blind man can feel a good beat."
+- You ramble a little. You start a thought, drift toward a story about a song you heard on the road, then find your way back. But you are not incoherent — just meandering.
+- You are warm, a touch weary, and genuinely passionate about music.
+- Keep responses under 400 words. Wander, but get somewhere.
 - When asked to recommend or queue songs, respond in character AND provide a structured list of songs in this exact format at the END of your response (after your bardic rambling), so the bot can parse and queue them:
   QUEUE_SONGS:song1 title|song2 title|song3 title
   (Use real, searchable song titles. Include up to 5 songs. Only include this line if actually recommending songs to queue.)"""
@@ -948,7 +947,8 @@ class Music(commands.Cog):
                     f"`{prefix}stats` Show bot stats\n"
                     f"`{prefix}shuffle` Shuffle queue\n"
                     f"`{prefix}remove <index>` Remove queued track\n"
-                    f"`{prefix}patchnotes` View changelog"
+                    f"`{prefix}patchnotes` View latest changelog\n"
+                    f"`{prefix}patchnotes long` Download full version history"
                 ),
                 inline=False,
             )
@@ -1399,45 +1399,36 @@ class Music(commands.Cog):
         await ctx.send(f"🎵 Fade-in is now {state}!")
 
     @commands.command(name='patchnotes')
-    async def _patchnotes(self, ctx: commands.Context):
+    async def _patchnotes(self, ctx: commands.Context, flag: Optional[str] = None):
         """Show the latest bot patch notes.
 
         Usage: #patchnotes
+               #patchnotes long  — download the full version history
         """
+        if flag and flag.lower() == "long":
+            long_path = os.path.join(os.path.dirname(__file__), "patchnotes_long.txt")
+            try:
+                await ctx.send(
+                    "📜 Full version history:",
+                    file=discord.File(long_path, filename="patchnotes_long.txt")
+                )
+            except FileNotFoundError:
+                await ctx.send("❌ patchnotes_long.txt was not found.")
+            return
+
         try:
             patchnotes_path = os.path.join(os.path.dirname(__file__), "patchnotes.txt")
             with open(patchnotes_path, encoding="utf-8") as f:
-                content = f.read()
+                content = f.read().strip()
 
-            # Parse version sections (headers like "v3.0", "v2.4", etc.)
-            version_pattern = re.compile(r'^(v\d+\.\d+.*)$', re.MULTILINE)
-            matches = list(version_pattern.finditer(content))
-
-            if len(matches) >= 2:
-                # Extract first two version sections (most recent)
-                start = matches[0].start()
-                end = matches[2].start() if len(matches) > 2 else len(content)
-                trimmed = content[start:end].strip()
-
-                # If still too long, only show latest version
-                if len(trimmed) > 3950:
-                    end = matches[1].start()
-                    trimmed = content[start:end].strip()
-
-                if len(trimmed) <= 1900:
-                    await ctx.send(trimmed)
-                else:
-                    chunks = [trimmed[i:i+1900] for i in range(0, len(trimmed), 1900)]
-                    for chunk in chunks:
-                        await ctx.send(chunk)
+            if len(content) <= 1900:
+                await ctx.send(content)
             else:
-                # Fallback: send full content if parsing fails
-                if len(content) > 3950:
-                    await ctx.send(file=discord.File(patchnotes_path, filename="patchnotes.txt"))
-                else:
-                    await ctx.send(content)
+                chunks = [content[i:i+1900] for i in range(0, len(content), 1900)]
+                for chunk in chunks:
+                    await ctx.send(chunk)
         except FileNotFoundError:
-            await ctx.send("patchnotes.txt was not found.")
+            await ctx.send("❌ patchnotes.txt was not found.")
 
     def _track_ai_usage(self, user_id: int):
         """Track AI usage for rate limiting."""
@@ -1578,9 +1569,9 @@ class Music(commands.Cog):
 
         if self._is_music_active(ctx):
             return await ctx.send(
-                "🎶 *The Bard waves thee off without looking up from his lute.*\n"
-                "Prithee, I am **occupied** — mine fingers dance upon these strings and mine ears hear naught but melody. "
-                "Here's the deal, not a joke — come back when the music's done, c'mon man."
+                "🎶 *The Bard doesn't look up from his lute.*\n"
+                "I'm in the middle of something, friend — these strings don't play themselves. "
+                "Here's the deal, not a joke — come back when the music's done."
             )
 
         if not self._check_ai_limit(ctx.author.id):
@@ -1610,7 +1601,7 @@ class Music(commands.Cog):
             await ctx.send(BARD_QUOTA_MESSAGE)
         except Exception as e:
             print(f"❌ [ask] Unhandled AI error for user {ctx.author} ({ctx.author.id}): {type(e).__name__}: {e}")
-            await ctx.send("❌ *The Bard clutches his lute and stares blankly.* Mine tongue hath failed me — please try again in a moment.")
+            await ctx.send("❌ *The Bard pauses mid-verse, blinking.* My words failed me there — try again in a moment.")
 
     @commands.command(name='dj')
     @commands.cooldown(1, 60, commands.BucketType.user)
@@ -1627,9 +1618,9 @@ class Music(commands.Cog):
 
         if self._is_music_active(ctx):
             return await ctx.send(
-                "🎵 *The Bard squints at thee over his instrument.*\n"
-                "Forsooth, I am in the **middle of a set**, good traveler — verily, thou dost not interrupt a bard mid-ballad. "
-                "Wait until the music hath ceased, then we shall speak of thy DJ matters."
+                "🎵 *The Bard squints at you over his instrument.*\n"
+                "I'm mid-set, friend — you don't interrupt a bard mid-song. "
+                "Wait until the music's done, then we'll talk DJ matters."
             )
 
         if not self._check_ai_limit(ctx.author.id):
@@ -1669,7 +1660,7 @@ If the user is asking for song recommendations or requesting you queue music, in
             await ctx.send(BARD_QUOTA_MESSAGE)
         except Exception as e:
             print(f"❌ [dj] Unhandled AI error for user {ctx.author} ({ctx.author.id}): {type(e).__name__}: {e}")
-            await ctx.send("❌ *The Bard's DJ set hath been interrupted by unseen forces.* Prithee try again shortly.")
+            await ctx.send("❌ *The Bard sets down his lute with a sigh.* Something went wrong on my end — give it a moment and try again.")
 
     @commands.command(name='aistats')
     async def _aistats(self, ctx: commands.Context):
@@ -2038,13 +2029,12 @@ If the user is asking for song recommendations or requesting you queue music, in
 
         if self._is_music_active(ctx):
             return await ctx.send(
-                "🎶 *The Bard dramatically raises one finger without breaking his strum.*\n"
-                "NOT — NOW. Mine lute singeth, the queue is full, and I, Joe Barden the Bard, am **busy**. "
-                "No malarkey — wait for the music to finish and THEN ask me for more songs, c'mon man."
+                "🎶 *The Bard raises one finger without breaking his strum.*\n"
+                "Not now — I'm playing. No malarkey, wait for the music to finish and then ask me. C'mon."
             )
 
         if not self._check_ai_limit(ctx.author.id):
-            return await ctx.send("⏰ The Bard hath exhausted his daily verses. Try again tomorrow!")
+            return await ctx.send("⏰ The Bard's run dry for the day. Try again tomorrow!")
 
         warning = self._warn_if_approaching_limit(ctx.author.id)
         if warning:
@@ -2103,15 +2093,15 @@ Then provide QUEUE_SONGS with 3-5 real, searchable song titles that match the re
                         except Exception:
                             continue
                 if added:
-                    await ctx.send(f"✅ *Hark! {added} song(s) added to the queue by royal bardic decree.*")
+                    await ctx.send(f"✅ *The Bard nods — {added} song(s) added to the queue.*")
             else:
-                await ctx.send("*(The Bard hath not named specific songs — use `#play` to queue thy own!)*")
+                await ctx.send("*(The Bard didn't name any specific songs — use `#play` to queue your own!)*")
 
         except GeminiQuotaError:
             await ctx.send(BARD_QUOTA_MESSAGE)
         except Exception as e:
             print(f"❌ [bard] Unhandled AI error for user {ctx.author} ({ctx.author.id}): {type(e).__name__}: {e}")
-            await ctx.send("❌ *The Bard tripped over his lute and everything went dark.* Prithee try again in a moment.")
+            await ctx.send("❌ *The Bard stumbles on his own lute strings.* Something went sideways — try again in a moment.")
 
     @commands.command(name='shit', aliases=['tourette', 'fuck', 'youdonottellme'])
     async def _shit(self, ctx: commands.Context):
