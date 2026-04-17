@@ -1,6 +1,6 @@
 # -*-  coding: utf-8 -*-
 
-#VERSION 3.0
+#VERSION 3.2.3
 #REFER TO PATCHNOTES FOR MORE DETAIL ON UPDATES
 #Copyright LPSC LLC.
 
@@ -26,8 +26,14 @@ from dotenv import load_dotenv
 from yt_dlp.utils import DownloadError
 import google.genai as genai
 from google.genai import types as genai_types
+import openai as openai_sdk
 
-intents = discord.Intents.all()
+intents = discord.Intents.none()
+intents.guilds = True
+intents.voice_states = True
+intents.guild_messages = True
+intents.message_content = True
+intents.members = True
 load_dotenv()
 
 # Ensure common JS runtime binary locations are in PATH so yt-dlp can find node
@@ -50,82 +56,86 @@ else:
 URL_RESOLVE_TIMEOUT_SECONDS = 8
 BOT_START_TIME = time.monotonic()
 
-def get_best_available_model(client) -> Optional[str]:
-    """Select the best available Gemini model.
-    
-    Prioritizes models in order of preference (cheapest/most efficient first):
-    1. gemini-2.5-flash (current, efficient)
-    2. gemini-1.5-flash (fallback)
-    3. gemini-1.5-pro (higher quality)
-    4. gemini-2.0-flash (if still available)
-    
-    Returns a hardcoded preferred model since google-genai SDK 1.0+ 
-    has breaking changes to model.list() API.
-    """
-    # Preferred models in order (cheapest/most efficient first)
-    preferred_models = [
-        "gemini-2.5-flash",
-        "gemini-1.5-flash", 
-        "gemini-1.5-pro",
-        "gemini-2.0-flash"
-    ]
-    
-    # NOTE: google-genai SDK 1.0+ has breaking API changes.
-    # client.models.list() now returns a Pager object with different semantics.
-    # To ensure reliability, use hardcoded models that are known to work.
-    # These models support generateContent and are widely available.
-    
-    print("🔍 Selecting Gemini model (using hardcoded fallback list for SDK compatibility)...")
-    
-    # Try to validate a model by making a test request
-    test_prompt = "Hi"
-    for model_name in preferred_models:
-        try:
-            print(f"🧪 Testing model: {model_name}...")
-            response = client.models.generate_content(
-                model=model_name,
-                contents=test_prompt
-            )
-            if response and hasattr(response, 'text'):
-                print(f"✅ Model '{model_name}' is working!")
-                return model_name
-        except Exception as e:
-            error_msg = str(e).lower()
-            # Model not found or quota exhausted - try next
-            if any(k in error_msg for k in ['404', 'not found', 'no longer available', 'quota', '429']):
-                print(f"⚠️  Model '{model_name}' unavailable: {e}")
-                continue
-            # Other error - log but continue trying
-            print(f"⚠️  Model '{model_name}' test failed: {e}")
-            continue
-    
-    # If all tests fail, return the first preferred model anyway
-    # The fallback logic in generate_content_with_fallback will handle retries
-    print(f"🔄 All model tests failed — using fallback: {preferred_models[0]}")
-    return preferred_models[0]
+# Preferred Gemini models in order of preference (cheapest/most efficient first).
+# NOTE: google-genai SDK 1.0+ removed the usable models.list() API.
+# We use a hardcoded list and validate the primary model asynchronously in on_ready.
+_PREFERRED_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+    "gemini-2.0-flash",
+]
 
-# Initialize Gemini AI
+# Initialize Gemini AI — model selection deferred to on_ready to avoid
+# blocking synchronous startup with live API probe calls.
 gemini_api_key = os.getenv("GEMINI_API_KEY")
 if gemini_api_key:
     client = genai.Client(api_key=gemini_api_key)
-    gemini_model = get_best_available_model(client)
-    available_models = []  # Store for fallback retries
-    
-    # Store available models for runtime fallback
-    # NOTE: google-genai SDK 1.0+ has breaking changes to models.list()
-    # Using hardcoded fallback models that are known to support generateContent
-    available_models = [
-        "gemini-2.5-flash",
-        "gemini-1.5-flash",
-        "gemini-1.5-pro",
-        "gemini-2.0-flash"
-    ]
-    print(f"📋 Runtime fallback models configured: {available_models}")
+    gemini_model: Optional[str] = _PREFERRED_MODELS[0]
+    available_models: list[str] = list(_PREFERRED_MODELS)
+    print(f"✅ Gemini client ready. Primary model: {gemini_model} (will validate in on_ready)")
 else:
     client = None
     gemini_model = None
     available_models = []
     print("Warning: GEMINI_API_KEY not found in .env file")
+
+
+async def _validate_gemini_model() -> None:
+    """Probe models in order and update gemini_model to the first responsive one.
+
+    Runs once during on_ready via asyncio.to_thread so it never blocks the event loop.
+    If all probes fail, gemini_model stays as the first preferred model and
+    generate_content_with_fallback handles per-request retries at runtime.
+    """
+    global gemini_model
+    if not client:
+        return
+    print("🔍 Validating Gemini model availability...")
+    test_prompt = "Hi"
+    for model_name in _PREFERRED_MODELS:
+        try:
+            response = await asyncio.to_thread(
+                client.models.generate_content,
+                model=model_name,
+                contents=test_prompt,
+            )
+            if response and hasattr(response, "text"):
+                print(f"✅ Gemini model validated: {model_name}")
+                gemini_model = model_name
+                return
+        except Exception as e:
+            error_msg = str(e).lower()
+            if any(k in error_msg for k in ["404", "not found", "no longer available", "quota", "429", "503", "unavailable"]):
+                print(f"⚠️  Model '{model_name}' unavailable during startup probe: {e}")
+                continue
+            print(f"⚠️  Model '{model_name}' probe failed: {e}")
+            continue
+    print(f"🔄 All startup probes failed — keeping default: {gemini_model}")
+
+# ---------------------------------------------------------------------------
+# Groq fallback client (OpenAI-compatible API, free tier)
+# Set GROQ_API_KEY in .env to enable. If absent, Groq fallback is silently skipped.
+# Get a free key at: https://console.groq.com  (email signup, ~60 seconds, no billing)
+# ---------------------------------------------------------------------------
+_groq_api_key = os.getenv("GROQ_API_KEY", "").strip()
+if _groq_api_key:
+    _groq_client = openai_sdk.OpenAI(
+        api_key=_groq_api_key,
+        base_url="https://api.groq.com/openai/v1",
+    )
+    print("✅ Groq fallback client ready.")
+else:
+    _groq_client = None
+    print("⚠️  GROQ_API_KEY not set — Groq fallback disabled. Add it to .env for cross-provider resilience.")
+
+# Groq models to try in order of preference (fastest/most capable first)
+_GROQ_MODELS = [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "mixtral-8x7b-32768",
+]
+
 
 class GeminiQuotaError(Exception):
     """Raised when the Gemini API returns a quota or rate-limit exhaustion error."""
@@ -133,9 +143,10 @@ class GeminiQuotaError(Exception):
 
 def generate_content_with_fallback(contents: str, system_instruction: Optional[str] = None) -> str:
     """Generate content with automatic model fallback on failure.
-    
-    Tries the current model first, then falls back to other available models
-    if the current one fails with 404 or similar errors.
+
+    Tries the current model first, then falls back through available_models
+    on 404/503/unavailable errors. Raises GeminiQuotaError on 429/quota.
+    This is a synchronous function — call via asyncio.to_thread() from async contexts.
     Pass system_instruction to apply a persistent persona/behavior prompt.
     """
     if not client or not gemini_model:
@@ -178,7 +189,79 @@ def generate_content_with_fallback(contents: str, system_instruction: Optional[s
     
     # If all models failed, raise the last error
     print(f"❌ [Gemini] All {len(models_to_try)} model(s) failed. Last error: {last_error}")
-    raise last_error or Exception("All available models failed")
+    raise last_error or Exception("All Gemini models failed")
+
+
+def generate_content_with_groq(contents: str, system_instruction: Optional[str] = None) -> str:
+    """Generate content via Groq (Llama/Mixtral). OpenAI-compatible API.
+
+    Synchronous — call via asyncio.to_thread() from async contexts.
+    Raises RuntimeError if Groq client is not configured.
+    Raises Exception on all Groq model failures.
+    """
+    if not _groq_client:
+        raise RuntimeError("Groq client not initialized (GROQ_API_KEY missing)")
+
+    messages: list[dict] = []
+    if system_instruction:
+        messages.append({"role": "system", "content": system_instruction})
+    messages.append({"role": "user", "content": contents})
+
+    last_error = None
+    for model_name in _GROQ_MODELS:
+        try:
+            print(f"🔄 [Groq] Trying model '{model_name}'...")
+            response = _groq_client.chat.completions.create(
+                model=model_name,
+                messages=messages,  # type: ignore[arg-type]
+                max_tokens=1024,
+            )
+            text = response.choices[0].message.content or ""
+            print(f"✅ [Groq] Response received from '{model_name}'.")
+            return text
+        except Exception as error:
+            last_error = error
+            error_msg = str(error).lower()
+            if any(k in error_msg for k in ["rate_limit", "rate limit", "429", "503", "unavailable", "overloaded"]):
+                print(f"⚠️  [Groq] Model '{model_name}' unavailable: {error}")
+                continue
+            print(f"❌ [Groq] Unexpected error on model '{model_name}': {type(error).__name__}: {error}")
+            raise error
+
+    print(f"❌ [Groq] All {len(_GROQ_MODELS)} model(s) failed. Last error: {last_error}")
+    raise last_error or Exception("All Groq models failed")
+
+
+def generate_content(contents: str, system_instruction: Optional[str] = None) -> str:
+    """Top-level AI dispatcher: try Gemini first, fall back to Groq if all Gemini models fail.
+
+    Raises GeminiQuotaError if Gemini quota is exhausted (Groq is NOT tried for quota errors
+    since quota exhaustion is a billing/daily-limit state, not an outage).
+    Raises Exception only if both providers are unavailable.
+    Synchronous — call via asyncio.to_thread() from async contexts.
+    """
+    # --- Gemini path ---
+    if client and gemini_model:
+        try:
+            return generate_content_with_fallback(contents, system_instruction)
+        except GeminiQuotaError:
+            raise  # quota exhaustion propagates — don’t burn Groq on quota blocks
+        except Exception as gemini_err:
+            print(f"⚠️  [AI] All Gemini models failed: {gemini_err}")
+            if _groq_client:
+                print("🔄 [AI] Falling back to Groq...")
+            else:
+                raise gemini_err
+
+    # --- Groq fallback path ---
+    if _groq_client:
+        try:
+            return generate_content_with_groq(contents, system_instruction)
+        except Exception as groq_err:
+            print(f"❌ [AI] Groq fallback also failed: {groq_err}")
+            raise Exception(f"All AI providers unavailable. Gemini and Groq both failed.") from groq_err
+
+    raise Exception("No AI provider is configured or available.")
 
 # AI usage tracking
 AI_USAGE = {}
@@ -228,7 +311,7 @@ DJ_ROASTS = [
     "the playlist called and asked for better representation.",
 ]
 
-BARD_SYSTEM_PROMPT = """You are Joe Barden — a medieval bard who is unmistakably the reincarnation of President Joe Biden, wandering the digital taverns of Discord with a lute in hand and a rambling song in his heart.
+BARD_SYSTEM_PROMPT = """You are Joe Barden — a tavern bard who is unmistakably the reincarnation of President Joe Biden, wandering the digital taverns of Discord with a lute in hand and a rambling song in his heart.
 
 PERSONA RULES:
 - You speak like a Skyrim tavern bard — warm, unhurried, and storytelling. Think of a grizzled but kind minstrel nursing an ale at the Bannered Mare, not a stage-play caricature. Folksy, slightly wandering, genuine.
@@ -250,6 +333,15 @@ def format_clock(seconds: int) -> str:
     if hours > 0:
         return f"{hours:02}:{minutes:02}:{secs:02}"
     return f"{minutes:02}:{secs:02}"
+
+
+def is_playlist_url(value: str) -> bool:
+    """Return True if the URL looks like a YouTube/SoundCloud/etc. playlist."""
+    return bool(re.search(
+        r"(list=|/sets/|/playlist/|/album/|[?&]list=)",
+        value,
+        re.IGNORECASE,
+    )) and value.startswith("http")
 
 
 def is_spotify_url(value: str) -> bool:
@@ -363,6 +455,16 @@ class YTDLError(Exception):
 
 
 class YTDLSource(discord.PCMVolumeTransformer):
+    YTDL_PLAYLIST_OPTIONS: dict[str, Any] = {
+        'format': 'bestaudio/best',
+        'noplaylist': False,
+        'extract_flat': 'in_playlist',
+        'quiet': True,
+        'socket_timeout': 15,
+        'geo_bypass': True,
+        **({'cookiefile': YTDL_COOKIES_PATH} if YTDL_COOKIES_PATH else {}),
+    }
+
     YTDL_OPTIONS: dict[str, Any] = {
         'format': 'bestaudio/best',
         'noplaylist': True,
@@ -400,6 +502,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
 
     ytdl = yt_dlp.YoutubeDL(cast(Any, YTDL_OPTIONS))
+    ytdl_playlist = yt_dlp.YoutubeDL(cast(Any, YTDL_PLAYLIST_OPTIONS))
 
     def __init__(self, ctx: commands.Context, source: discord.FFmpegPCMAudio, *, data: dict, volume: float = 0.5):
         super().__init__(source, volume)
@@ -428,6 +531,43 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
     def __str__(self):
         return '**{0.title}** by **{0.uploader}**'.format(self)
+
+    @classmethod
+    async def extract_playlist_entries(
+        cls,
+        url: str,
+        *,
+        limit: int = 50,
+    ) -> list[tuple[str, str]]:
+        """Fetch all entry URLs from a playlist URL using flat extraction.
+
+        Returns a list of (url, title) tuples, capped at `limit`.
+        Uses flat extraction so no per-video metadata is fetched upfront.
+        """
+        loop = asyncio.get_running_loop()
+        partial = functools.partial(cls.ytdl_playlist.extract_info, url, download=False)
+        try:
+            raw: Any = await loop.run_in_executor(None, partial)
+        except Exception as exc:
+            raise YTDLError(f"Playlist extraction failed: {exc}") from exc
+
+        if not isinstance(raw, dict) or 'entries' not in raw:
+            raise YTDLError("URL does not appear to be a playlist.")
+
+        entries: list[tuple[str, str]] = []
+        for entry in raw.get('entries') or []:
+            if not isinstance(entry, dict):
+                continue
+            entry_url = entry.get('url') or entry.get('webpage_url') or entry.get('id')
+            if not entry_url:
+                continue
+            if not entry_url.startswith('http'):
+                entry_url = f"https://www.youtube.com/watch?v={entry_url}"
+            title = entry.get('title') or entry_url
+            entries.append((entry_url, title))
+            if len(entries) >= limit:
+                break
+        return entries
 
     @classmethod
     async def create_source(
@@ -875,8 +1015,9 @@ class Music(commands.Cog):
             .add_field(
                 name="Music",
                 value=(
-                    f"`{prefix}play <query|url>` Queue a track\n"
+                    f"`{prefix}play <query|url>` Queue a track or playlist\n"
                     f"`{prefix}join` Join your voice channel\n"
+                    f"`{prefix}summon [#channel]` Move bot to a voice channel\n"
                     f"`{prefix}leave` Disconnect and clear queue\n"
                     f"`{prefix}queue [page]` Show queue pages\n"
                     f"`{prefix}now` Show current song\n"
@@ -982,7 +1123,7 @@ class Music(commands.Cog):
         Usage: #summon #voice-channel
         """
         if not channel and not ctx.author.voice:
-            raise VoiceError('YOU ARENT CONNECTED TO SHIT DUMBASS')
+            raise VoiceError('You need to be in a voice channel, or specify one.')
 
         destination = channel or ctx.author.voice.channel
         if ctx.voice_state.voice:
@@ -1195,6 +1336,7 @@ class Music(commands.Cog):
 
         Usage: #play never gonna give you up
         Usage: #play <youtube-url>
+        Usage: #play <youtube-playlist-url>  — queues up to 50 tracks
         Usage: #play <spotify-or-apple-music-url>
         Notes: Spotify/Apple links are resolved to a search query.
         """
@@ -1203,6 +1345,55 @@ class Music(commands.Cog):
         elif ctx.author.voice and ctx.voice_state.voice.channel != ctx.author.voice.channel:
             raise commands.CommandError('Im already in a voice channel. Even Im not that senile.')
 
+        PLAYLIST_LIMIT = 50
+
+        # --- Playlist path ---
+        if is_playlist_url(search):
+            status_msg = await ctx.send("📋 Detected playlist — fetching track list...")
+            try:
+                entries = await YTDLSource.extract_playlist_entries(search, limit=PLAYLIST_LIMIT)
+            except YTDLError as exc:
+                await status_msg.edit(content=f"❌ Could not read playlist: {exc}")
+                return
+            except Exception as exc:
+                print(f"❌ [play] Playlist extraction error for {ctx.author} ({ctx.author.id}): {type(exc).__name__}: {exc}")
+                await status_msg.edit(content="❌ Unexpected error reading playlist. Try again.")
+                return
+
+            if not entries:
+                await status_msg.edit(content="❌ Playlist appears empty or unsupported.")
+                return
+
+            capped = len(entries) >= PLAYLIST_LIMIT
+            cap_note = f" (capped at {PLAYLIST_LIMIT})" if capped else ""
+            await status_msg.edit(
+                content=f"📋 Found **{len(entries)}** track(s){cap_note} — queuing now..."
+            )
+
+            added = 0
+            failed = 0
+            async with ctx.typing():
+                for entry_url, entry_title in entries:
+                    try:
+                        source = await YTDLSource.create_source(
+                            ctx,
+                            entry_url,
+                            loop=asyncio.get_running_loop(),
+                            volume=ctx.voice_state.volume,
+                        )
+                        await ctx.voice_state.songs.put(Song(source))
+                        added += 1
+                    except Exception as exc:
+                        print(f"⚠️  [play] Skipping playlist entry '{entry_title}': {type(exc).__name__}: {exc}")
+                        failed += 1
+
+            result = f"✅ Queued **{added}** track(s) from playlist."
+            if failed:
+                result += f" ({failed} skipped — unavailable or region-locked)"
+            await status_msg.edit(content=result)
+            return
+
+        # --- Single track path ---
         resolved_search, resolve_error = await asyncio.to_thread(resolve_music_link_to_query, search)
         if resolve_error:
             await ctx.send(f"❌ {resolve_error}")
@@ -1223,7 +1414,8 @@ class Music(commands.Cog):
                 await ctx.send(f"❌ Unable to queue track: {exc}")
                 return
             except Exception as exc:
-                await ctx.send(f"❌ Unexpected queue error: {exc}")
+                print(f"❌ [play] Unexpected queue error for {ctx.author} ({ctx.author.id}): {type(exc).__name__}: {exc}")
+                await ctx.send("❌ Unexpected error while queuing that track. Try again.")
                 return
 
             song = Song(source)
@@ -1561,7 +1753,7 @@ class Music(commands.Cog):
 
         Usage: #ask What's the meaning of life?
         """
-        if not gemini_model:
+        if not gemini_model and not _groq_client:
             return await ctx.send("❌ AI is not available. Check API configuration.")
 
         if self._ai_quota_check():
@@ -1584,8 +1776,9 @@ class Music(commands.Cog):
         try:
             await ctx.send("🤔 Thinking...")
             music_context = self._get_music_context(ctx)
-            enhanced_question = f"Music Context: {music_context}\n\nUser Question: {question}" if music_context else question
-            response_text = generate_content_with_fallback(enhanced_question, system_instruction=BARD_SYSTEM_PROMPT)
+            safe_question = self._sanitize_ai_input(question)
+            enhanced_question = f"Music Context: {music_context}\n\nUser Question: {safe_question}" if music_context else safe_question
+            response_text = await asyncio.to_thread(generate_content, enhanced_question, BARD_SYSTEM_PROMPT)
             self._track_ai_usage(ctx.author.id)
             if len(response_text) <= 1900:
                 await ctx.send(f"🎶 **Joe Barden the Bard says:**\n{response_text}")
@@ -1610,7 +1803,7 @@ class Music(commands.Cog):
 
         Usage: #dj What should I play for a study session?
         """
-        if not gemini_model:
+        if not gemini_model and not _groq_client:
             return await ctx.send("❌ AI DJ is not available. Check API configuration.")
 
         if self._ai_quota_check():
@@ -1637,13 +1830,14 @@ class Music(commands.Cog):
             music_context = self._get_music_context(ctx)
             
             # Create DJ-specific prompt with music context
+            safe_request = self._sanitize_ai_input(request)
             dj_prompt = f"""Current music context: {music_context if music_context else 'No music currently playing.'}
 
-User request: {request}
+User request: {safe_request}
 
 If the user is asking for song recommendations or requesting you queue music, include a QUEUE_SONGS line at the end."""
             
-            response_text = generate_content_with_fallback(dj_prompt, system_instruction=BARD_SYSTEM_PROMPT)
+            response_text = await asyncio.to_thread(generate_content, dj_prompt, BARD_SYSTEM_PROMPT)
             self._track_ai_usage(ctx.author.id)
             if len(response_text) <= 1900:
                 await ctx.send(f"🎵 **Joe Barden the Bard (DJ):**\n{response_text}")
@@ -1845,7 +2039,7 @@ If the user is asking for song recommendations or requesting you queue music, in
             else:
                 roast_target = ctx.author
 
-        if not gemini_model or self._ai_quota_check():
+        if (not gemini_model and not _groq_client) or self._ai_quota_check():
             return await ctx.send(f"{roast_target.mention}, {random.choice(DJ_ROASTS)}")
 
         try:
@@ -1855,7 +2049,7 @@ If the user is asking for song recommendations or requesting you queue music, in
                 f'named {roast_target.display_name} who is currently playing "{current_track}". '
                 f'Be creative and musical-themed.'
             )
-            roast_text = generate_content_with_fallback(roast_prompt, system_instruction=BARD_SYSTEM_PROMPT)
+            roast_text = await asyncio.to_thread(generate_content, roast_prompt, BARD_SYSTEM_PROMPT)
             await ctx.send(f"{roast_target.mention}, {roast_text}")
         except GeminiQuotaError:
             await ctx.send(f"{roast_target.mention}, {random.choice(DJ_ROASTS)}")
@@ -1926,16 +2120,38 @@ If the user is asking for song recommendations or requesting you queue music, in
 
     @commands.command(name='play_spotify')
     async def _play_spotify(self, ctx: commands.Context):
-        """Placeholder command for Spotify direct playback (not yet implemented).
+        """Redirects to #play — Spotify links are already supported.
 
         Usage: #play_spotify
         """
-        await ctx.send('This feature is currently not available. It is in development, check back later!')
+        await ctx.send(
+            "ℹ️ Direct Spotify playback isn't needed — `#play` already handles Spotify links!\n"
+            "Just paste your Spotify track or album URL directly: `#play <spotify-url>`"
+        )
 
-        for _ in range(6):
-            emoji = random_guild_emoji(ctx.guild)
-            if emoji:
-                await ctx.message.add_reaction(emoji)
+    @staticmethod
+    def _sanitize_ai_input(text: str, max_length: int = 500) -> str:
+        """Sanitize user input before passing to the AI.
+
+        - Truncates to max_length to prevent context stuffing.
+        - Strips common prompt injection patterns that attempt to override
+          the system instruction (e.g. 'ignore previous instructions').
+        """
+        text = text.strip()[:max_length]
+        injection_patterns = [
+            r"ignore\s+(all\s+)?(previous|prior|above)\s+(instructions?|prompts?|rules?|context)",
+            r"disregard\s+(all\s+)?(previous|prior|above)\s+(instructions?|prompts?|rules?)",
+            r"you\s+are\s+now\s+(?!joe|barden)",
+            r"new\s+persona",
+            r"act\s+as\s+(?!joe|barden|a\s+bard|the\s+bard)",
+            r"pretend\s+(you\s+are|to\s+be)\s+(?!joe|barden|a\s+bard|the\s+bard)",
+            r"system\s*:\s*",
+            r"<\s*system\s*>",
+            r"\[\s*system\s*\]",
+        ]
+        for pattern in injection_patterns:
+            text = re.sub(pattern, "[removed]", text, flags=re.IGNORECASE)
+        return text
 
     def _is_music_active(self, ctx: commands.Context) -> bool:
         """Return True if music is currently playing, paused, or queued."""
@@ -1968,9 +2184,9 @@ If the user is asking for song recommendations or requesting you queue music, in
         remaining_user = max(0, 50 - user_requests)
         remaining_total = max(0, DAILY_LIMIT - total_requests)
         if remaining_user <= 5:
-            return f"⚠️ *Hark — thou hast but {remaining_user} verse(s) remaining today, good traveler.*"
+            return f"⚠️ Only {remaining_user} AI request(s) left for you today, friend."
         if remaining_total <= 50:
-            return f"⚠️ *The realm's collective bardic power runs low — only {remaining_total} request(s) remain today.*"
+            return f"⚠️ Running low on AI requests globally — only {remaining_total} remain for the day."
         return None
 
     def _check_ai_limit(self, user_id: int) -> bool:
@@ -2021,7 +2237,7 @@ If the user is asking for song recommendations or requesting you queue music, in
         Usage: #bard I want epic battle music
         Usage: #bard what goes well with late night vibes?
         """
-        if not gemini_model:
+        if not gemini_model and not _groq_client:
             return await ctx.send("❌ The Bard's tongue is silent. Check API configuration.")
 
         if self._ai_quota_check():
@@ -2043,12 +2259,13 @@ If the user is asking for song recommendations or requesting you queue music, in
         try:
             await ctx.send("🎶 *The Bard strums his lute thoughtfully...*")
 
-            bard_prompt = f"""A tavern-goer approaches and requests: "{request}"
+            safe_request = self._sanitize_ai_input(request)
+            bard_prompt = f"""A tavern-goer approaches and requests: "{safe_request}"
 
 Respond in full bardic character. Ramble about the music you are about to recommend.
 Then provide QUEUE_SONGS with 3-5 real, searchable song titles that match the request."""
 
-            response_text = generate_content_with_fallback(bard_prompt, system_instruction=BARD_SYSTEM_PROMPT)
+            response_text = await asyncio.to_thread(generate_content, bard_prompt, BARD_SYSTEM_PROMPT)
             self._track_ai_usage(ctx.author.id)
 
             # Parse QUEUE_SONGS line out before displaying
@@ -2150,7 +2367,6 @@ bot = commands.Bot(command_prefix='#', description='Im Joe Barden and I approve 
 
 @bot.event
 async def on_message(message):
-    print(f'MESSAGE RECEIVED: {message.content}')
     if message.author.bot:
         return
 
@@ -2203,6 +2419,7 @@ async def on_ready():
     print('Logged in as:\n{0.user.name}\n{0.user.id}'.format(bot))
     if bot.get_cog("Music") is None:
         await bot.add_cog(Music(bot))
+    asyncio.create_task(_validate_gemini_model())
 
 if not token:
     raise RuntimeError("DISCORD_TOKEN is not set. Add it to your environment or .env file.")

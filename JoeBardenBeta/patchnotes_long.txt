@@ -1,3 +1,83 @@
+v3.2.3 BETA
+
+Summary
+- Groq (Llama/Mixtral) integrated as a cross-provider AI fallback. If all Gemini models fail, the bot automatically retries the request through Groq before giving up.
+
+🤖 NEW: GROQ AI FALLBACK
+- Added generate_content_with_groq() and a top-level generate_content() dispatcher.
+- All AI commands (#ask, #dj, #bard, #roastdj) now go through generate_content(), which tries Gemini first and falls through to Groq only on full Gemini failure (outage, key issues, all models exhausted).
+- Groq quota errors do NOT trigger fallback — daily quota exhaustion still surfaces the BARD_QUOTA_MESSAGE correctly.
+- Groq models tried in order: llama-3.3-70b-versatile → llama-3.1-8b-instant → mixtral-8x7b-32768.
+- Groq is optional: set GROQ_API_KEY in .env to enable. If absent, bot warns at startup and skips Groq silently.
+- Free Groq key: https://console.groq.com — email signup, no billing, ~60 seconds. Difficulty: 1/5.
+- AI availability guards updated across all commands to check both Gemini and Groq, not just Gemini.
+- openai>=1.0.0 added to requirements.txt (used as the Groq API compatibility layer).
+
+────────────────────────────────────────
+
+v3.2.2 BETA
+
+Summary
+- #play now supports YouTube playlist URLs — enumerates all tracks and queues up to 50 automatically.
+
+🎵 NEW: PLAYLIST SUPPORT
+- #play now detects playlist URLs (YouTube, SoundCloud, etc.) and queues each track individually.
+- Uses flat extraction (no per-video prefetch) so the playlist index is retrieved in one fast call, then each track is streamed on demand.
+- Capped at 50 tracks per playlist to prevent runaway queues. If the cap is hit, the status message notes it.
+- Bot sends a live status message that updates: fetching → found N tracks → queued N (X skipped).
+- Unavailable, private, or region-locked tracks are silently skipped with an internal log entry.
+- Single-track and search-query behavior is completely unchanged.
+
+📋 HELP UPDATE
+- #play entry updated to mention playlist support.
+
+────────────────────────────────────────
+
+v3.2.1 BETA
+
+Summary
+- Deferred Gemini model validation to on_ready (no more synchronous API calls at startup), added prompt injection sanitization across all AI commands, and replaced the #play_spotify stub with a useful redirect.
+
+⚡ STARTUP IMPROVEMENT
+- get_best_available_model() removed from module-level synchronous execution. Bot now starts instantly and runs the Gemini model probe asynchronously in on_ready via asyncio.create_task(_validate_gemini_model()), with no event loop impact.
+
+🔒 PROMPT INJECTION PROTECTION
+- New _sanitize_ai_input() helper added. Applied to all three AI input commands (#ask, #dj, #bard) before user text reaches Gemini.
+- Strips common override patterns: "ignore previous instructions", "you are now", "act as", "new persona", "system:", XML/bracket system tags, etc.
+- Truncates all input to 500 characters to prevent context stuffing.
+- Legitimate music requests (e.g. "act as a DJ") pass through — patterns are scoped to exclude bard/joe/DJ references.
+
+🗑️ STUB REPLACED
+- #play_spotify no longer pretends to be a future feature — replaced with a redirect informing users that #play already handles Spotify links natively.
+
+────────────────────────────────────────
+
+v3.2.0 BETA
+
+Summary
+- Deep audit pass: critical event loop bug fixed, security hardening, two missed tone strings cleaned up, raw exception exposure removed, version header corrected, and #help updated with missing command.
+
+🚨 CRITICAL FIX
+- Fixed: All four AI commands (#ask, #dj, #bard, #roastdj) were calling the Gemini API synchronously, blocking the entire Discord event loop for the duration of each API call (2-10+ seconds). All calls now wrapped in asyncio.to_thread() so the bot remains responsive during AI generation.
+
+🔒 SECURITY
+- Scoped discord.Intents from Intents.all() down to only required intents: guilds, voice_states, guild_messages, message_content, members. Reduces attack surface and complies with Discord's intent policy.
+- Removed blanket print(f'MESSAGE RECEIVED: {message.content}') that was logging all user messages (including private channel content) to stdout on every single message.
+- Sanitized raw exception exposure in #play — unexpected errors now log internally and show a generic user-facing message instead of the raw exception string.
+
+🐛 BUG FIXES
+- Fixed: Dead variable assignment — available_models was initialized to [] then immediately overwritten on the next line.
+- Fixed: Two AI limit warning strings still contained old medieval tone ("Hark — thou hast but N verse(s)") — now plain and consistent with v3.1.2 tone update.
+- Fixed: BARD_SYSTEM_PROMPT first line still read "medieval bard" after the v3.1.2 Skyrim rewrite — corrected to "tavern bard".
+- Fixed: #summon error message was a hostile raw string — replaced with a clean user-facing message.
+- Fixed: File header version comment still read 3.0 — updated to 3.1.2 (then 3.2.0 with this release).
+- Updated generate_content_with_fallback docstring to reflect actual behavior (503/overloaded handling, asyncio.to_thread note).
+
+📋 HELP UPDATE
+- Added #summon to the Music section of #help (was implemented but undocumented).
+
+────────────────────────────────────────
+
 v3.1.2 BETA
 
 Summary

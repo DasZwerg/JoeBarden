@@ -1,15 +1,14 @@
-v3.1.2 BETA
+v3.2.3 BETA
 
 Summary
-- 503 UNAVAILABLE model errors now trigger automatic fallback to the next available Gemini model instead of immediately failing.
-- Joe Barden persona dialed back from over-the-top medieval caricature to Skyrim tavern bard style — warmer, more grounded, less "forsooth" every sentence.
+- Groq (Llama/Mixtral) integrated as a cross-provider AI fallback. If all Gemini models fail, the bot automatically retries the request through Groq before giving up.
 
-🐛 BUG FIXES
-- Fixed: 503 UNAVAILABLE / "high demand" errors from Gemini now fall through to the model fallback loop (gemini-2.5-flash → gemini-1.5-flash → gemini-1.5-pro → gemini-2.0-flash) instead of raising immediately. Previously only 404/not-found triggered fallback.
-- Fixed: "overloaded" and generic "unavailable" error strings also now trigger fallback for robustness.
-
-🎭 PERSONA TUNING
-- BARD_SYSTEM_PROMPT rewritten: tone reference changed from generic medieval caricature to Skyrim tavern bard (Bannered Mare).
-- Archaic words (forsooth, hath, prithee, verily, hearken, methinks) restricted — only used sparingly, not every response.
-- All hardcoded bot error/status messages updated to match: quota message, DJ error, ask error, bard error, music-active guards, daily limit notices.
-- Biden-isms preserved but reframed to feel natural rather than scripted.
+🤖 NEW: GROQ AI FALLBACK
+- Added generate_content_with_groq() and a top-level generate_content() dispatcher.
+- All AI commands (#ask, #dj, #bard, #roastdj) now go through generate_content(), which tries Gemini first and falls through to Groq only on full Gemini failure (outage, key issues, all models exhausted).
+- Groq quota errors do NOT trigger fallback — daily quota exhaustion still surfaces the BARD_QUOTA_MESSAGE correctly.
+- Groq models tried in order: llama-3.3-70b-versatile → llama-3.1-8b-instant → mixtral-8x7b-32768.
+- Groq is optional: set GROQ_API_KEY in .env to enable. If absent, bot warns at startup and skips Groq silently.
+- Free Groq key: https://console.groq.com — email signup, no billing, ~60 seconds. Difficulty: 1/5.
+- AI availability guards updated across all commands to check both Gemini and Groq, not just Gemini.
+- openai>=1.0.0 added to requirements.txt (used as the Groq API compatibility layer).
