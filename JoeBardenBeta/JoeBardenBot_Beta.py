@@ -13,7 +13,9 @@ import json
 import math
 import random
 import re
+import sys
 import time
+import traceback
 import urllib.parse
 import urllib.request
 from typing import Any, Optional, cast
@@ -55,6 +57,32 @@ else:
     print(f"[Cookie] WARNING: No cookie file found. Age-restricted content will fail. Set YTDL_COOKIES_PATH in .env or place cookies.txt at: {_cookies_default}")
 URL_RESOLVE_TIMEOUT_SECONDS = 8
 BOT_START_TIME = time.monotonic()
+
+_ERROR_LOG_PATH = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "errors.txt"))
+_ERROR_LOG_MAX_BYTES = 100 * 1024 * 1024  # 100 MB
+
+
+def log_error(message: str, exc: Optional[BaseException] = None) -> None:
+    """Append a timestamped error entry to errors.txt.
+
+    Creates the file if it does not exist. After writing, checks the file size
+    and rotates (deletes and recreates) if it exceeds 100 MB.
+    """
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines = [f"[{timestamp}] {message}"]
+    if exc is not None:
+        tb = traceback.format_exception(type(exc), exc, exc.__traceback__)
+        lines.append("".join(tb).rstrip())
+    entry = "\n".join(lines) + "\n\n"
+    try:
+        with open(_ERROR_LOG_PATH, "a", encoding="utf-8") as fp:
+            fp.write(entry)
+        if os.path.getsize(_ERROR_LOG_PATH) > _ERROR_LOG_MAX_BYTES:
+            os.remove(_ERROR_LOG_PATH)
+            with open(_ERROR_LOG_PATH, "w", encoding="utf-8") as fp:
+                fp.write(f"[{timestamp}] [log_error] Log exceeded 100 MB — rotated.\n\n")
+    except Exception as log_exc:
+        print(f"[log_error] Failed to write to errors.txt: {log_exc}", file=sys.stderr)
 
 # Preferred Gemini models in order of preference (cheapest/most efficient first).
 # NOTE: google-genai SDK 1.0+ removed the usable models.list() API.
@@ -108,37 +136,12 @@ async def _validate_gemini_model() -> None:
             error_msg = str(e).lower()
             if any(k in error_msg for k in ["404", "not found", "no longer available", "quota", "429", "503", "unavailable"]):
                 print(f"⚠️  Model '{model_name}' unavailable during startup probe: {e}")
+                log_error(f"[Gemini] Model '{model_name}' unavailable during startup probe", e)
                 continue
             print(f"⚠️  Model '{model_name}' probe failed: {e}")
+            log_error(f"[Gemini] Model '{model_name}' probe failed", e)
             continue
     print(f"🔄 All startup probes failed — keeping default: {gemini_model}")
-
-# ---------------------------------------------------------------------------
-# Groq fallback client (OpenAI-compatible API, free tier)
-# Set GROQ_API_KEY in .env to enable. If absent, Groq fallback is silently skipped.
-# Get a free key at: https://console.groq.com  (email signup, ~60 seconds, no billing)
-# ---------------------------------------------------------------------------
-_groq_api_key = os.getenv("GROQ_API_KEY", "").strip()
-if _groq_api_key:
-    _groq_client = openai_sdk.OpenAI(
-        api_key=_groq_api_key,
-        base_url="https://api.groq.com/openai/v1",
-    )
-    print("✅ Groq fallback client ready.")
-else:
-    _groq_client = None
-    print("⚠️  GROQ_API_KEY not set — Groq fallback disabled. Add it to .env for cross-provider resilience.")
-
-# Groq models to try in order of preference (fastest/most capable first)
-_GROQ_MODELS = [
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
-    "mixtral-8x7b-32768",
-]
-
-
-class GeminiQuotaError(Exception):
-    """Raised when the Gemini API returns a quota or rate-limit exhaustion error."""
 
 
 def generate_content_with_fallback(contents: str, system_instruction: Optional[str] = None) -> str:
@@ -176,19 +179,23 @@ def generate_content_with_fallback(contents: str, system_instruction: Optional[s
             if any(k in error_msg for k in ['429', 'quota', 'resource_exhausted', 'rate limit', 'rate_limit']):
                 _gemini_quota_exhausted_at = time.monotonic()
                 print(f"🚫 [Gemini] Quota exhausted on model '{model_name}': {error}")
+                log_error(f"[Gemini] Quota exhausted on model '{model_name}'", error)
                 raise GeminiQuotaError(str(error)) from error
 
             # Model unavailable or temporarily overloaded — try next model
             if any(keyword in error_msg for keyword in ['404', 'not found', 'no longer available', '503', 'unavailable', 'overloaded']):
                 print(f"⚠️  [Gemini] Model '{model_name}' unavailable: {error}")
+                log_error(f"[Gemini] Model '{model_name}' unavailable", error)
                 print(f"🔄 [Gemini] Trying next model...")
                 continue
             else:
                 print(f"❌ [Gemini] Unexpected error on model '{model_name}': {type(error).__name__}: {error}")
+                log_error(f"[Gemini] Unexpected error on model '{model_name}'", error)
                 raise error
     
     # If all models failed, raise the last error
     print(f"❌ [Gemini] All {len(models_to_try)} model(s) failed. Last error: {last_error}")
+    log_error(f"[Gemini] All {len(models_to_try)} model(s) failed", last_error if isinstance(last_error, BaseException) else None)
     raise last_error or Exception("All Gemini models failed")
 
 
@@ -224,11 +231,14 @@ def generate_content_with_groq(contents: str, system_instruction: Optional[str] 
             error_msg = str(error).lower()
             if any(k in error_msg for k in ["rate_limit", "rate limit", "429", "503", "unavailable", "overloaded"]):
                 print(f"⚠️  [Groq] Model '{model_name}' unavailable: {error}")
+                log_error(f"[Groq] Model '{model_name}' unavailable", error)
                 continue
             print(f"❌ [Groq] Unexpected error on model '{model_name}': {type(error).__name__}: {error}")
+            log_error(f"[Groq] Unexpected error on model '{model_name}'", error)
             raise error
 
     print(f"❌ [Groq] All {len(_GROQ_MODELS)} model(s) failed. Last error: {last_error}")
+    log_error(f"[Groq] All {len(_GROQ_MODELS)} model(s) failed", last_error if isinstance(last_error, BaseException) else None)
     raise last_error or Exception("All Groq models failed")
 
 
@@ -248,6 +258,7 @@ def generate_content(contents: str, system_instruction: Optional[str] = None) ->
             raise  # quota exhaustion propagates — don’t burn Groq on quota blocks
         except Exception as gemini_err:
             print(f"⚠️  [AI] All Gemini models failed: {gemini_err}")
+            log_error("[AI] All Gemini models failed", gemini_err)
             if _groq_client:
                 print("🔄 [AI] Falling back to Groq...")
             else:
@@ -259,6 +270,7 @@ def generate_content(contents: str, system_instruction: Optional[str] = None) ->
             return generate_content_with_groq(contents, system_instruction)
         except Exception as groq_err:
             print(f"❌ [AI] Groq fallback also failed: {groq_err}")
+            log_error("[AI] Groq fallback also failed", groq_err)
             raise Exception(f"All AI providers unavailable. Gemini and Groq both failed.") from groq_err
 
     raise Exception("No AI provider is configured or available.")
@@ -797,6 +809,7 @@ class VoiceState:
                         stream_url = fresh_data.get('url')
                 except Exception as resolve_exc:
                     print(f"[Player] Stream URL re-resolve failed, falling back to cached URL: {resolve_exc}")
+                    log_error("[Player] Stream URL re-resolve failed", resolve_exc)
 
             if not stream_url:
                 stream_url = source_metadata.stream_url or source_metadata.data.get('url')
@@ -865,6 +878,7 @@ class VoiceState:
                 await self._send_player_error(channel, f"Audio playback failed: {exc}")
             except Exception as exc:
                 print(f"[Player] Unexpected error during play: {exc}")
+                log_error("[Player] Unexpected error during play", exc)
                 await self._send_player_error(channel, f"Unexpected playback failure: {exc}")
 
             if played:
@@ -876,6 +890,7 @@ class VoiceState:
     def play_next_song(self, error=None):
         if error:
             print(f"[Player] Playback error reported: {error}")
+            log_error("[Player] Playback error reported", error)
         self._playback_error = str(error) if error else None
         self.bot.loop.call_soon_threadsafe(self.next.set)
 
@@ -940,6 +955,7 @@ class Music(commands.Cog):
                 json.dump(data, fp, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"❌ [playlists] Failed to write playlists: {e}")
+            log_error("[playlists] Failed to write playlists", e)
             raise
 
     def get_voice_state(self, ctx: commands.Context):
@@ -977,6 +993,7 @@ class Music(commands.Cog):
 
     async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
         print(f"❌ [cog_command_error] {ctx.command}: {type(error).__name__}: {error}")
+        log_error(f"[cog_command_error] {ctx.command}: {type(error).__name__}: {error}", error if isinstance(error, BaseException) else None)
         if isinstance(error, commands.CommandOnCooldown):
             await ctx.send(f"⏳ Slow down — this command is on cooldown. Try again in {error.retry_after:.1f}s.")
         elif isinstance(error, commands.MissingRequiredArgument):
@@ -1357,6 +1374,7 @@ class Music(commands.Cog):
                 return
             except Exception as exc:
                 print(f"❌ [play] Playlist extraction error for {ctx.author} ({ctx.author.id}): {type(exc).__name__}: {exc}")
+                log_error(f"[play] Playlist extraction error for {ctx.author} ({ctx.author.id})", exc)
                 await status_msg.edit(content="❌ Unexpected error reading playlist. Try again.")
                 return
 
@@ -1385,6 +1403,7 @@ class Music(commands.Cog):
                         added += 1
                     except Exception as exc:
                         print(f"⚠️  [play] Skipping playlist entry '{entry_title}': {type(exc).__name__}: {exc}")
+                        log_error(f"[play] Skipping playlist entry '{entry_title}'", exc)
                         failed += 1
 
             result = f"✅ Queued **{added}** track(s) from playlist."
@@ -1415,6 +1434,7 @@ class Music(commands.Cog):
                 return
             except Exception as exc:
                 print(f"❌ [play] Unexpected queue error for {ctx.author} ({ctx.author.id}): {type(exc).__name__}: {exc}")
+                log_error(f"[play] Unexpected queue error for {ctx.author} ({ctx.author.id})", exc)
                 await ctx.send("❌ Unexpected error while queuing that track. Try again.")
                 return
 
@@ -1794,6 +1814,7 @@ class Music(commands.Cog):
             await ctx.send(BARD_QUOTA_MESSAGE)
         except Exception as e:
             print(f"❌ [ask] Unhandled AI error for user {ctx.author} ({ctx.author.id}): {type(e).__name__}: {e}")
+            log_error(f"[ask] Unhandled AI error for user {ctx.author} ({ctx.author.id})", e)
             await ctx.send("❌ *The Bard pauses mid-verse, blinking.* My words failed me there — try again in a moment.")
 
     @commands.command(name='dj')
@@ -1854,6 +1875,7 @@ If the user is asking for song recommendations or requesting you queue music, in
             await ctx.send(BARD_QUOTA_MESSAGE)
         except Exception as e:
             print(f"❌ [dj] Unhandled AI error for user {ctx.author} ({ctx.author.id}): {type(e).__name__}: {e}")
+            log_error(f"[dj] Unhandled AI error for user {ctx.author} ({ctx.author.id})", e)
             await ctx.send("❌ *The Bard sets down his lute with a sigh.* Something went wrong on my end — give it a moment and try again.")
 
     @commands.command(name='aistats')
@@ -1959,12 +1981,17 @@ If the user is asking for song recommendations or requesting you queue music, in
                 return await ctx.send(f"No playlist named **{name}**.")
             if not ctx.voice_state.voice:
                 await ctx.invoke(self._join)
+
+            await ctx.send(f"📋 Loading **{name}** — {len(tracks)} tracks...")
             added = 0
             async with ctx.typing():
                 for query in tracks:
                     try:
                         source = await YTDLSource.create_source(
-                            ctx, query, loop=asyncio.get_running_loop(), volume=ctx.voice_state.volume
+                            ctx,
+                            query,
+                            loop=asyncio.get_running_loop(),
+                            volume=ctx.voice_state.volume,
                         )
                         await ctx.voice_state.songs.put(Song(source))
                         added += 1
@@ -2056,6 +2083,7 @@ If the user is asking for song recommendations or requesting you queue music, in
             await ctx.send(f"{roast_target.mention}, {random.choice(DJ_ROASTS)}")
         except Exception as e:
             print(f"❌ [roastdj] Unhandled AI error for user {ctx.author} ({ctx.author.id}): {type(e).__name__}: {e}")
+            log_error(f"[roastdj] Unhandled AI error for user {ctx.author} ({ctx.author.id})", e)
             await ctx.send(f"{roast_target.mention}, {random.choice(DJ_ROASTS)}")
 
     @commands.command(name='stats')
@@ -2195,6 +2223,8 @@ If the user is asking for song recommendations or requesting you queue music, in
         today = datetime.now().date()
         if today not in AI_USAGE:
             AI_USAGE[today] = {}
+            for stale_key in [k for k in AI_USAGE if k != today]:
+                del AI_USAGE[stale_key]
         user_requests = AI_USAGE[today].get(user_id, 0)
         total_requests = sum(AI_USAGE[today].values())
         return user_requests < 50 and total_requests < DAILY_LIMIT
@@ -2319,6 +2349,7 @@ Then provide QUEUE_SONGS with 3-5 real, searchable song titles that match the re
             await ctx.send(BARD_QUOTA_MESSAGE)
         except Exception as e:
             print(f"❌ [bard] Unhandled AI error for user {ctx.author} ({ctx.author.id}): {type(e).__name__}: {e}")
+            log_error(f"[bard] Unhandled AI error for user {ctx.author} ({ctx.author.id})", e)
             await ctx.send("❌ *The Bard stumbles on his own lute strings.* Something went sideways — try again in a moment.")
 
     @commands.command(name='shit', aliases=['tourette', 'fuck', 'youdonottellme'])
