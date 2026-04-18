@@ -1044,17 +1044,7 @@ class Music(commands.Cog):
         embed = (
             discord.Embed(
                 title="Joe Barden Bot Command Center",
-                description=(
-                    "```\n"
-                    "██████╗ ███████╗████████╗ █████╗ \n"
-                    "██╔══██╗██╔════╝╚══██╔══╝██╔══██╗\n"
-                    "██████╔╝█████╗     ██║   ███████║\n"
-                    "██╔══██╗██╔══╝     ██║   ██╔══██║\n"
-                    "██████╔╝███████╗   ██║   ██║  ██║\n"
-                    "╚═════╝ ╚══════╝   ╚═╝   ╚═╝  ╚═╝\n"
-                    "```\n"
-                    "Use the commands below in the configured music channel."
-                ),
+                description="Use the commands below in the configured music channel.",
                 color=discord.Color.blurple(),
             )
             .add_field(
@@ -1134,7 +1124,7 @@ class Music(commands.Cog):
                     f"`$shuffle` Shuffle queue\n"
                     f"`$remove <index>` Remove queued track\n"
                     f"`$patchnotes` View latest changelog\n"
-                    f"`$patchnotes long` Download full version history"
+                    f"`$patchnotes_long` Download full version history"
                 ),
                 inline=False,
             )
@@ -1639,34 +1629,48 @@ class Music(commands.Cog):
         await ctx.send(f"🎵 Fade-in is now {state}!")
 
     @commands.command(name='patchnotes')
-    async def _patchnotes(self, ctx: commands.Context, flag: Optional[str] = None):
-        """Show the latest bot patch notes.
+    async def _patchnotes(self, ctx: commands.Context):
+        """Show a summary of the latest patch notes.
 
         Usage: $patchnotes
-               $patchnotes long  — download the full version history
         """
-        if flag and flag.lower() == "long":
-            long_path = os.path.join(os.path.dirname(__file__), "patchnotes_long.txt")
-            try:
-                await ctx.send(
-                    "📜 Full version history:",
-                    file=discord.File(long_path, filename="patchnotes_long.txt")
-                )
-            except FileNotFoundError:
-                await ctx.send("❌ patchnotes_long.txt was not found.")
-            return
-
         try:
             patchnotes_path = os.path.join(os.path.dirname(__file__), "patchnotes.txt")
             with open(patchnotes_path, encoding="utf-8") as f:
                 content = f.read().strip()
 
-            if len(content) <= 1900:
-                await ctx.send(content)
+            # Extract only the first version block
+            lines = content.splitlines()
+            block: list[str] = []
+            found_first = False
+            for line in lines:
+                if re.match(r'^v\d', line):
+                    if found_first:
+                        break
+                    found_first = True
+                if found_first:
+                    block.append(line)
+
+            summary = "\n".join(block).strip() if block else content
+            if len(summary) <= 1900:
+                await ctx.send(summary)
             else:
-                chunks = [content[i:i+1900] for i in range(0, len(content), 1900)]
-                for chunk in chunks:
-                    await ctx.send(chunk)
+                await ctx.send(summary[:1900] + "\n\n*...truncated — use `$patchnotes_long` for full history.*")
+        except FileNotFoundError:
+            await ctx.send("❌ patchnotes.txt was not found.")
+
+    @commands.command(name='patchnotes_long')
+    async def _patchnotes_long(self, ctx: commands.Context):
+        """Download the full version history as a file.
+
+        Usage: $patchnotes_long
+        """
+        patchnotes_path = os.path.join(os.path.dirname(__file__), "patchnotes.txt")
+        try:
+            await ctx.send(
+                "📜 Full version history:",
+                file=discord.File(patchnotes_path, filename="patchnotes.txt")
+            )
         except FileNotFoundError:
             await ctx.send("❌ patchnotes.txt was not found.")
 
