@@ -2044,9 +2044,10 @@ If the user is asking for song recommendations or requesting you queue music, in
 
         try:
             current_track = ctx.voice_state.current.source.title if ctx.voice_state.current else "some questionable music"
+            safe_display_name = self._sanitize_ai_input(roast_target.display_name, max_length=100)
             roast_prompt = (
                 f'Generate a short, funny, light-hearted roast (under 200 characters) of a Discord DJ '
-                f'named {roast_target.display_name} who is currently playing "{current_track}". '
+                f'named {safe_display_name} who is currently playing "{current_track}". '
                 f'Be creative and musical-themed.'
             )
             roast_text = await asyncio.to_thread(generate_content, roast_prompt, BARD_SYSTEM_PROMPT)

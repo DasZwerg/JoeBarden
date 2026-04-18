@@ -1,3 +1,32 @@
+v3.2.3
+
+Summary
+- Production promotion of the v3.2.3 Beta build. Integrates Groq (Llama/Mixtral) as a cross-provider AI fallback, hardens security, and fixes a critical bot startup defect. All beta references removed.
+
+🤖 NEW: GROQ AI FALLBACK
+- Added generate_content_with_groq() and a top-level generate_content() dispatcher.
+- All AI commands (#ask, #dj, #bard, #roastdj) now route through generate_content(), which tries Gemini first and falls through to Groq only on full Gemini failure (outage, key issues, all models exhausted).
+- Groq quota errors do NOT trigger fallback — daily quota exhaustion still surfaces the BARD_QUOTA_MESSAGE correctly.
+- Groq models tried in order: llama-3.3-70b-versatile → llama-3.1-8b-instant → mixtral-8x7b-32768.
+- Groq is optional: set GROQ_API_KEY in .env to enable. If absent, bot warns at startup and skips Groq silently.
+- Free Groq key: https://console.groq.com — email signup, no billing, ~60 seconds. Difficulty: 1/5.
+- AI availability guards updated across all commands to check both Gemini and Groq, not just Gemini.
+- openai>=1.0.0 added to requirements.txt (used as the Groq API compatibility layer).
+
+🔧 CRITICAL FIX: BOT STARTUP
+- FIXED: bot.run(token) was missing from the Beta source — bot would import successfully but never start. Added.
+
+🔒 SECURITY
+- FIXED: _roastdj now sanitizes roast_target.display_name through _sanitize_ai_input() before embedding in AI prompt. Prevents user-controlled display names from being used as prompt injection vectors.
+- REMOVED: Unknown package 'davey' from requirements.txt (no code references; potential typosquat risk).
+
+🔁 AI MODEL SELECTION (carried from Beta)
+- Replaced deprecated get_best_available_model() / client.models.list() call (removed in google-genai SDK 1.0+) with a hardcoded preferred-model list validated asynchronously in on_ready.
+- Models probed in order: gemini-2.5-flash → gemini-1.5-flash → gemini-1.5-pro → gemini-2.0-flash.
+
+🎛️ INTENTS HARDENING
+- Replaced discord.Intents.all() (over-permissioned) with a minimal explicit intent set: guilds, voice_states, guild_messages, message_content, members.
+
 v3.0
 
 Summary

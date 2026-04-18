@@ -1,7 +1,12 @@
-v3.2.3 BETA
+v3.2.3 BETA — Validation Pass (Orchestrator)
 
 Summary
 - Groq (Llama/Mixtral) integrated as a cross-provider AI fallback. If all Gemini models fail, the bot automatically retries the request through Groq before giving up.
+- Orchestrator validation pass applied two fixes prior to production promotion (see below).
+
+🔧 FIXES APPLIED IN VALIDATION PASS
+- FIXED: bot.run(token) was missing — the bot would load without error but never actually start. Added at end of file.
+- FIXED: _roastdj did not sanitize roast_target.display_name before passing it to the AI prompt. Now routed through _sanitize_ai_input() (max_length=100) to prevent display-name-based prompt injection.
 
 🤖 NEW: GROQ AI FALLBACK
 - Added generate_content_with_groq() and a top-level generate_content() dispatcher.
