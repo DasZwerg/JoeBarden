@@ -2,7 +2,6 @@
 
 #VERSION 3.2.3
 #REFER TO PATCHNOTES FOR MORE DETAIL ON UPDATES
-#Promoted from Beta build — all fixes applied
 #Copyright LPSC LLC.
 
 import os
@@ -364,7 +363,7 @@ PERSONA RULES:
 - You ramble a little. You start a thought, drift toward a story about a song you heard on the road, then find your way back. But you are not incoherent — just meandering.
 - You are warm, a touch weary, and genuinely passionate about music.
 - Keep responses under 400 words. Wander, but get somewhere.
-- When asked to recommend or queue songs, respond in character AND provide a structured list of songs in this exact format at the END of your response (after your bardic rambling), so the bot can parse and queue them:
+- When asked to recommend or queue songs, respond in character AND provide a structured list of songs in this exact format at the end of your response (after your bardic rambling), so the bot can parse and queue them:
   QUEUE_SONGS:song1 title|song2 title|song3 title
   (Use real, searchable song titles. Include up to 5 songs. Only include this line if actually recommending songs to queue.)"""
 
@@ -1027,9 +1026,9 @@ class Music(commands.Cog):
         if isinstance(error, commands.CommandOnCooldown):
             await ctx.send(f"⏳ Slow down — this command is on cooldown. Try again in {error.retry_after:.1f}s.")
         elif isinstance(error, commands.MissingRequiredArgument):
-            await ctx.send(f"❌ Missing argument: `{error.param.name}`. Use `#help` for usage.")
+            await ctx.send(f"❌ Missing argument: `{error.param.name}`. Use `$help` for usage.")
         elif isinstance(error, commands.BadArgument):
-            await ctx.send("❌ Invalid argument. Use `#help` for usage.")
+            await ctx.send("❌ Invalid argument. Use `$help` for usage.")
         elif isinstance(error, commands.NoPrivateMessage):
             await ctx.send("❌ This command cannot be used in DMs.")
         else:
@@ -1039,9 +1038,9 @@ class Music(commands.Cog):
     async def _help(self, ctx: commands.Context):
         """Show an embedded command menu.
 
-        Usage: #help
+        Usage: $help
         """
-        prefix = "#"
+        prefix = "$"
         embed = (
             discord.Embed(
                 title="Joe Barden Bot Command Center",
@@ -1061,66 +1060,66 @@ class Music(commands.Cog):
             .add_field(
                 name="Music",
                 value=(
-                    f"`{prefix}play <query|url>` Queue a track or playlist\n"
-                    f"`{prefix}join` Join your voice channel\n"
-                    f"`{prefix}summon [#channel]` Move bot to a voice channel\n"
-                    f"`{prefix}leave` Disconnect and clear queue\n"
-                    f"`{prefix}queue [page]` Show queue pages\n"
-                    f"`{prefix}now` Show current song\n"
-                    f"`{prefix}nowbar` Show progress bar\n"
-                    f"`{prefix}history` Show recently played"
+                    f"`$play <query|url>` Queue a track or playlist\n"
+                    f"`$join` Join your voice channel\n"
+                    f"`$summon [#channel]` Move bot to a voice channel\n"
+                    f"`$leave` Disconnect and clear queue\n"
+                    f"`$queue [page]` Show queue pages\n"
+                    f"`$now` Show current song\n"
+                    f"`$nowbar` Show progress bar\n"
+                    f"`$history` Show recently played"
                 ),
                 inline=False,
             )
             .add_field(
                 name="Playback Controls",
                 value=(
-                    f"`{prefix}pause` Pause\n"
-                    f"`{prefix}resume` Resume\n"
-                    f"`{prefix}stop` Stop and clear\n"
-                    f"`{prefix}clear` Clear queue (keep playing)\n"
-                    f"`{prefix}skip` Skip current track\n"
-                    f"`{prefix}replay` Replay current track\n"
-                    f"`{prefix}loop on|off` Loop current track\n"
-                    f"`{prefix}volume <0-100>` Set volume"
+                    f"`$pause` Pause\n"
+                    f"`$resume` Resume\n"
+                    f"`$stop` Stop and clear\n"
+                    f"`$clear` Clear queue (keep playing)\n"
+                    f"`$skip` Skip current track\n"
+                    f"`$replay` Replay current track\n"
+                    f"`$loop on|off` Loop current track\n"
+                    f"`$volume <0-100>` Set volume"
                 ),
                 inline=False,
             )
             .add_field(
                 name="🎛️ Audio Effects",
                 value=(
-                    f"`{prefix}effects` Show all effects\n"
-                    f"`{prefix}nightcore on|off` Speed up music\n"
-                    f"`{prefix}slowmo on|off` Slow down music\n"
-                    f"`{prefix}vaporwave on|off` Aesthetic effect\n"
-                    f"`{prefix}reverse on|off` Play backwards\n"
-                    f"`{prefix}bass on|off` Heavy bass boost\n"
-                    f"`{prefix}lofi on|off` Crunchy vintage sound\n"
-                    f"`{prefix}echo on|off` Triple echo chamber\n"
-                    f"`{prefix}tremolo on|off` Pulsing effect\n"
-                    f"`{prefix}fadein on|off` Smooth fade-in"
+                    f"`$effects` Show all effects\n"
+                    f"`$nightcore on|off` Speed up music\n"
+                    f"`$slowmo on|off` Slow down music\n"
+                    f"`$vaporwave on|off` Aesthetic effect\n"
+                    f"`$reverse on|off` Play backwards\n"
+                    f"`$bass on|off` Heavy bass boost\n"
+                    f"`$lofi on|off` Crunchy vintage sound\n"
+                    f"`$echo on|off` Triple echo chamber\n"
+                    f"`$tremolo on|off` Pulsing effect\n"
+                    f"`$fadein on|off` Smooth fade-in"
                 ),
                 inline=False,
             )
             .add_field(
                 name="Playlists and Discovery",
                 value=(
-                    f"`{prefix}playlist save <name>` Save queue\n"
-                    f"`{prefix}playlist load <name>` Load saved playlist\n"
-                    f"`{prefix}playlist list` List saved playlists\n"
-                    f"`{prefix}mood <happy|chill|rage|focus>` Queue mood set\n"
-                    f"`{prefix}lyrics <artist - title>` Fetch lyrics"
+                    f"`$playlist save <name>` Save queue\n"
+                    f"`$playlist load <name>` Load saved playlist\n"
+                    f"`$playlist list` List saved playlists\n"
+                    f"`$mood <happy|chill|rage|focus>` Queue mood set\n"
+                    f"`$lyrics <artist - title>` Fetch lyrics"
                 ),
                 inline=False,
             )
             .add_field(
                 name="🤖 AI Assistant",
                 value=(
-                    f"`{prefix}bard <request>` Ask the Bard — AI queues songs for you\n"
-                    f"`{prefix}ask <question>` Ask AI anything\n"
-                    f"`{prefix}dj <request>` AI music recommendations\n"
-                    f"`{prefix}roastdj [@user]` AI-powered roast of the DJ\n"
-                    f"`{prefix}aistats` Check AI usage limits\n\n"
+                    f"`$bard <request>` Ask the Bard — AI queues songs for you\n"
+                    f"`$ask <question>` Ask AI anything\n"
+                    f"`$dj <request>` AI music recommendations\n"
+                    f"`$roastdj [@user]` AI-powered roast of the DJ\n"
+                    f"`$aistats` Check AI usage limits\n\n"
                     f"⚠️ **Please use AI responsibly** — I pay for each request!\n"
                     f"🎶 AI commands are unavailable while music is playing or queued."
                 ),
@@ -1129,17 +1128,17 @@ class Music(commands.Cog):
             .add_field(
                 name="Community and Utility",
                 value=(
-                    f"`{prefix}usage` Simple how-to guide\n"
-                    f"`{prefix}votemode on|off` Toggle vote skip mode\n"
-                    f"`{prefix}stats` Show bot stats\n"
-                    f"`{prefix}shuffle` Shuffle queue\n"
-                    f"`{prefix}remove <index>` Remove queued track\n"
-                    f"`{prefix}patchnotes` View latest changelog\n"
-                    f"`{prefix}patchnotes long` Download full version history"
+                    f"`$usage` Simple how-to guide\n"
+                    f"`$votemode on|off` Toggle vote skip mode\n"
+                    f"`$stats` Show bot stats\n"
+                    f"`$shuffle` Shuffle queue\n"
+                    f"`$remove <index>` Remove queued track\n"
+                    f"`$patchnotes` View latest changelog\n"
+                    f"`$patchnotes long` Download full version history"
                 ),
                 inline=False,
             )
-            .set_footer(text="Joe Barden Bot — use #help for commands.")
+            .set_footer(text="Joe Barden Bot — use $help for commands.")
         )
 
         await ctx.send(embed=embed)
@@ -1149,7 +1148,7 @@ class Music(commands.Cog):
     async def _join(self, ctx: commands.Context):
         """Join your current voice channel.
 
-        Usage: #join
+        Usage: $join
         """
         if not ctx.author.voice or not ctx.author.voice.channel:
             raise commands.CommandError('You are not connected to a voice channel.')
@@ -1166,7 +1165,7 @@ class Music(commands.Cog):
     async def _summon(self, ctx: commands.Context, *, channel: discord.VoiceChannel = None):
         """Move the bot to a specific voice channel.
 
-        Usage: #summon #voice-channel
+        Usage: $summon #voice-channel
         """
         if not channel and not ctx.author.voice:
             raise VoiceError('You need to be in a voice channel, or specify one.')
@@ -1182,8 +1181,8 @@ class Music(commands.Cog):
     async def _leave(self, ctx: commands.Context):
         """Stop playback, clear queue, and disconnect.
 
-        Usage: #leave
-        Alias: #disconnect
+        Usage: $leave
+        Alias: $disconnect
         """
         if not ctx.voice_state.voice:
             return await ctx.send('Not connected to any voice channel.')
@@ -1195,7 +1194,7 @@ class Music(commands.Cog):
     async def _volume(self, ctx: commands.Context, *, volume: int):
         """Set playback volume from 0 to 100.
 
-        Usage: #volume 60
+        Usage: $volume 60
         """
         if not ctx.voice_state.is_playing:
             return await ctx.send('You are not listening to anything.')
@@ -1213,8 +1212,8 @@ class Music(commands.Cog):
     async def _now(self, ctx: commands.Context):
         """Show the currently playing track.
 
-        Usage: #now
-        Aliases: #current, #playing
+        Usage: $now
+        Aliases: $current, $playing
         """
         if not ctx.voice_state.is_playing:
             return await ctx.send('There is no song currently playing.')
@@ -1225,7 +1224,7 @@ class Music(commands.Cog):
     async def _pause(self, ctx: commands.Context):
         """Pause the current track.
 
-        Usage: #pause
+        Usage: $pause
         """
         if ctx.voice_state.voice and (ctx.voice_state.is_playing or ctx.voice_state.voice.is_playing()):
             ctx.voice_state.voice.pause()
@@ -1235,7 +1234,7 @@ class Music(commands.Cog):
     async def _resume(self, ctx: commands.Context):
         """Resume a paused track.
 
-        Usage: #resume
+        Usage: $resume
         """
         if ctx.voice_state.voice and ctx.voice_state.voice.is_paused():
             ctx.voice_state.voice.resume()
@@ -1245,7 +1244,7 @@ class Music(commands.Cog):
     async def _stop(self, ctx: commands.Context):
         """Stop playback and clear queued tracks.
 
-        Usage: #stop
+        Usage: $stop
         """
         ctx.voice_state.songs.clear()
         ctx.voice_state.loop = False
@@ -1258,7 +1257,7 @@ class Music(commands.Cog):
     async def _clear(self, ctx: commands.Context):
         """Clear the song queue without stopping current playback.
 
-        Usage: #clear
+        Usage: $clear
         """
         if len(ctx.voice_state.songs) == 0:
             return await ctx.send('The queue is already empty.')
@@ -1270,7 +1269,7 @@ class Music(commands.Cog):
     async def _skip(self, ctx: commands.Context):
         """Skip the current song (vote-based when vote mode is enabled).
 
-        Usage: #skip
+        Usage: $skip
         """
         if not ctx.voice_state.is_playing:
             return await ctx.send('NO. MUSIC. PLAYING. WHAT ARE YOU DOING!?')
@@ -1308,8 +1307,8 @@ class Music(commands.Cog):
     async def _queue(self, ctx: commands.Context, *, page: int = 1):
         """Show the song queue.
 
-        Usage: #queue
-        Usage: #queue 2
+        Usage: $queue
+        Usage: $queue 2
         Notes: 10 tracks per page.
         """
         if len(ctx.voice_state.songs) == 0:
@@ -1335,7 +1334,7 @@ class Music(commands.Cog):
     async def _shuffle(self, ctx: commands.Context):
         """Shuffle the current queue.
 
-        Usage: #shuffle
+        Usage: $shuffle
         """
         if len(ctx.voice_state.songs) == 0:
             return await ctx.send('Empty queue.')
@@ -1347,7 +1346,7 @@ class Music(commands.Cog):
     async def _remove(self, ctx: commands.Context, index: int):
         """Remove one queued song by position.
 
-        Usage: #remove 3
+        Usage: $remove 3
         """
         if len(ctx.voice_state.songs) == 0:
             return await ctx.send('Empty queue.')
@@ -1361,12 +1360,12 @@ class Music(commands.Cog):
     async def _loop(self, ctx: commands.Context, mode: str):
         """Enable or disable loop for the current track.
 
-        Usage: #loop on
-        Usage: #loop off
+        Usage: $loop on
+        Usage: $loop off
         """
         mode_normalized = mode.strip().lower()
         if mode_normalized not in {"on", "off"}:
-            return await ctx.send("Usage: #loop on|off")
+            return await ctx.send("Usage: $loop on|off")
 
         if not ctx.voice_state.is_playing:
             return await ctx.send('Nothing being played at the moment.')
@@ -1380,10 +1379,10 @@ class Music(commands.Cog):
     async def _play(self, ctx: commands.Context, *, search: str):
         """Play a track from a query or URL.
 
-        Usage: #play never gonna give you up
-        Usage: #play <youtube-url>
-        Usage: #play <youtube-playlist-url>  — queues up to 50 tracks
-        Usage: #play <spotify-or-apple-music-url>
+        Usage: $play never gonna give you up
+        Usage: $play <youtube-url>
+        Usage: $play <youtube-playlist-url>  — queues up to 50 tracks
+        Usage: $play <spotify-or-apple-music-url>
         Notes: Spotify/Apple links are resolved to a search query.
         """
         if not ctx.voice_state.voice:
@@ -1475,7 +1474,7 @@ class Music(commands.Cog):
     async def _lyrics(self, ctx: commands.Context, *, query: str = ""):
         """Fetch song lyrics by artist and title.
 
-        Usage: #lyrics Queen - Bohemian Rhapsody
+        Usage: $lyrics Queen - Bohemian Rhapsody
         Notes: If omitted, tries current track title.
         """
         lookup_query = query.strip()
@@ -1499,12 +1498,12 @@ class Music(commands.Cog):
     async def _nightcore(self, ctx: commands.Context, mode: str):
         """Toggle nightcore playback effect for upcoming tracks.
 
-        Usage: #nightcore on
-        Usage: #nightcore off
+        Usage: $nightcore on
+        Usage: $nightcore off
         """
         mode_normalized = mode.strip().lower()
         if mode_normalized not in {"on", "off"}:
-            return await ctx.send("Usage: #nightcore on|off")
+            return await ctx.send("Usage: $nightcore on|off")
         
         ctx.voice_state._clear_effects()
         ctx.voice_state.nightcore = mode_normalized == "on"
@@ -1515,12 +1514,12 @@ class Music(commands.Cog):
     async def _slowmo(self, ctx: commands.Context, mode: str):
         """Toggle slow-motion playback effect for upcoming tracks.
 
-        Usage: #slowmo on
-        Usage: #slowmo off
+        Usage: $slowmo on
+        Usage: $slowmo off
         """
         mode_normalized = mode.strip().lower()
         if mode_normalized not in {"on", "off"}:
-            return await ctx.send("Usage: #slowmo on|off")
+            return await ctx.send("Usage: $slowmo on|off")
         
         ctx.voice_state._clear_effects()
         ctx.voice_state.slowmo = mode_normalized == "on"
@@ -1531,12 +1530,12 @@ class Music(commands.Cog):
     async def _vaporwave(self, ctx: commands.Context, mode: str):
         """Toggle vaporwave aesthetic effect for upcoming tracks.
 
-        Usage: #vaporwave on
-        Usage: #vaporwave off
+        Usage: $vaporwave on
+        Usage: $vaporwave off
         """
         mode_normalized = mode.strip().lower()
         if mode_normalized not in {"on", "off"}:
-            return await ctx.send("Usage: #vaporwave on|off")
+            return await ctx.send("Usage: $vaporwave on|off")
         
         ctx.voice_state._clear_effects()
         ctx.voice_state.vaporwave = mode_normalized == "on"
@@ -1547,12 +1546,12 @@ class Music(commands.Cog):
     async def _reverse(self, ctx: commands.Context, mode: str):
         """Toggle reverse playback effect for upcoming tracks.
 
-        Usage: #reverse on
-        Usage: #reverse off
+        Usage: $reverse on
+        Usage: $reverse off
         """
         mode_normalized = mode.strip().lower()
         if mode_normalized not in {"on", "off"}:
-            return await ctx.send("Usage: #reverse on|off")
+            return await ctx.send("Usage: $reverse on|off")
         
         ctx.voice_state._clear_effects()
         ctx.voice_state.reverse = mode_normalized == "on"
@@ -1563,12 +1562,12 @@ class Music(commands.Cog):
     async def _bass(self, ctx: commands.Context, mode: str):
         """Toggle bass boost effect for upcoming tracks.
 
-        Usage: #bass on
-        Usage: #bass off
+        Usage: $bass on
+        Usage: $bass off
         """
         mode_normalized = mode.strip().lower()
         if mode_normalized not in {"on", "off"}:
-            return await ctx.send("Usage: #bass on|off")
+            return await ctx.send("Usage: $bass on|off")
         
         ctx.voice_state._clear_effects()
         ctx.voice_state.bass = mode_normalized == "on"
@@ -1579,12 +1578,12 @@ class Music(commands.Cog):
     async def _lofi(self, ctx: commands.Context, mode: str):
         """Toggle lo-fi effect for upcoming tracks.
 
-        Usage: #lofi on
-        Usage: #lofi off
+        Usage: $lofi on
+        Usage: $lofi off
         """
         mode_normalized = mode.strip().lower()
         if mode_normalized not in {"on", "off"}:
-            return await ctx.send("Usage: #lofi on|off")
+            return await ctx.send("Usage: $lofi on|off")
         
         ctx.voice_state._clear_effects()
         ctx.voice_state.lofi = mode_normalized == "on"
@@ -1595,12 +1594,12 @@ class Music(commands.Cog):
     async def _echo(self, ctx: commands.Context, mode: str):
         """Toggle echo chamber effect for upcoming tracks.
 
-        Usage: #echo on
-        Usage: #echo off
+        Usage: $echo on
+        Usage: $echo off
         """
         mode_normalized = mode.strip().lower()
         if mode_normalized not in {"on", "off"}:
-            return await ctx.send("Usage: #echo on|off")
+            return await ctx.send("Usage: $echo on|off")
         
         ctx.voice_state._clear_effects()
         ctx.voice_state.echo = mode_normalized == "on"
@@ -1611,12 +1610,12 @@ class Music(commands.Cog):
     async def _tremolo(self, ctx: commands.Context, mode: str):
         """Toggle tremolo/pulsing effect for upcoming tracks.
 
-        Usage: #tremolo on
-        Usage: #tremolo off
+        Usage: $tremolo on
+        Usage: $tremolo off
         """
         mode_normalized = mode.strip().lower()
         if mode_normalized not in {"on", "off"}:
-            return await ctx.send("Usage: #tremolo on|off")
+            return await ctx.send("Usage: $tremolo on|off")
         
         ctx.voice_state._clear_effects()
         ctx.voice_state.tremolo = mode_normalized == "on"
@@ -1627,12 +1626,12 @@ class Music(commands.Cog):
     async def _fadein(self, ctx: commands.Context, mode: str):
         """Toggle fade-in effect for upcoming tracks.
 
-        Usage: #fadein on
-        Usage: #fadein off
+        Usage: $fadein on
+        Usage: $fadein off
         """
         mode_normalized = mode.strip().lower()
         if mode_normalized not in {"on", "off"}:
-            return await ctx.send("Usage: #fadein on|off")
+            return await ctx.send("Usage: $fadein on|off")
         
         ctx.voice_state._clear_effects()
         ctx.voice_state.fadein = mode_normalized == "on"
@@ -1643,8 +1642,8 @@ class Music(commands.Cog):
     async def _patchnotes(self, ctx: commands.Context, flag: Optional[str] = None):
         """Show the latest bot patch notes.
 
-        Usage: #patchnotes
-               #patchnotes long  — download the full version history
+        Usage: $patchnotes
+               $patchnotes long  — download the full version history
         """
         if flag and flag.lower() == "long":
             long_path = os.path.join(os.path.dirname(__file__), "patchnotes_long.txt")
@@ -1684,7 +1683,7 @@ class Music(commands.Cog):
     async def _usage(self, ctx: commands.Context):
         """Show simple usage instructions.
 
-        Usage: #usage
+        Usage: $usage
         """
         embed = discord.Embed(
             title="🎵 How to Use Joe Barden Bot",
@@ -1695,10 +1694,10 @@ class Music(commands.Cog):
         embed.add_field(
             name="🎶 Play Music",
             value=(
-                "**#play song name** - Plays any song\n"
-                "**#play YouTube link** - Copy paste any YouTube URL\n"
-                "**#play Spotify link** - Works with Spotify too!\n"
-                "**#mood happy** - Get a happy playlist"
+                "**$play song name** - Plays any song\n"
+                "**$play YouTube link** - Copy paste any YouTube URL\n"
+                "**$play Spotify link** - Works with Spotify too!\n"
+                "**$mood happy** - Get a happy playlist"
             ),
             inline=False
         )
@@ -1706,10 +1705,10 @@ class Music(commands.Cog):
         embed.add_field(
             name="🎮 Control Music",
             value=(
-                "**#skip** - Skip current song\n"
-                "**#volume 50** - Change volume (0-100)\n"
-                "**#queue** - See what's playing next\n"
-                "**#now** - See current song info"
+                "**$skip** - Skip current song\n"
+                "**$volume 50** - Change volume (0-100)\n"
+                "**$queue** - See what's playing next\n"
+                "**$now** - See current song info"
             ),
             inline=False
         )
@@ -1717,16 +1716,16 @@ class Music(commands.Cog):
         embed.add_field(
             name="🎛️ Audio Effects (Party Tricks!)",
             value=(
-                "**#effects** - See all available effects\n"
-                "**#nightcore on** - Speed up music (party mode!)\n"
-                "**#slowmo on** - Slow down music (chill vibes)\n"
-                "**#vaporwave on** - Aesthetic slowed + echo\n"
-                "**#reverse on** - Play music backwards!\n"
-                "**#bass on** - Heavy bass boost!\n"
-                "**#lofi on** - Crunchy vintage sound!\n"
-                "**#echo on** - Triple echo chamber!\n"
-                "**#tremolo on** - Pulsing tremolo effect!\n"
-                "**#fadein on** - Smooth fade-in start!"
+                "**$effects** - See all available effects\n"
+                "**$nightcore on** - Speed up music (party mode!)\n"
+                "**$slowmo on** - Slow down music (chill vibes)\n"
+                "**$vaporwave on** - Aesthetic slowed + echo\n"
+                "**$reverse on** - Play music backwards!\n"
+                "**$bass on** - Heavy bass boost!\n"
+                "**$lofi on** - Crunchy vintage sound!\n"
+                "**$echo on** - Triple echo chamber!\n"
+                "**$tremolo on** - Pulsing tremolo effect!\n"
+                "**$fadein on** - Smooth fade-in start!"
             ),
             inline=False
         )
@@ -1734,10 +1733,10 @@ class Music(commands.Cog):
         embed.add_field(
             name="📋 Other Fun Stuff",
             value=(
-                "**#lyrics artist - song** - Get song lyrics\n"
-                "**#history** - See recently played songs\n"
-                "**#shuffle** - Mix up the playlist\n"
-                "**#roastdj** - Roast the current DJ 😄"
+                "**$lyrics artist - song** - Get song lyrics\n"
+                "**$history** - See recently played songs\n"
+                "**$shuffle** - Mix up the playlist\n"
+                "**$roastdj** - Roast the current DJ 😄"
             ),
             inline=False
         )
@@ -1745,10 +1744,10 @@ class Music(commands.Cog):
         embed.add_field(
             name="🤖 AI Assistant",
             value=(
-                "**#ask What's the meaning of life?** - Ask AI anything\n"
-                "**#dj Suggest study music** - AI music recommendations\n"
-                "**#bard play me something for a rainy day** - AI queues songs for you\n"
-                "**#aistats** - Check your AI usage limits"
+                "**$ask What's the meaning of life?** - Ask AI anything\n"
+                "**$dj Suggest study music** - AI music recommendations\n"
+                "**$bard play me something for a rainy day** - AI queues songs for you\n"
+                "**$aistats** - Check your AI usage limits"
             ),
             inline=False
         )
@@ -1758,14 +1757,14 @@ class Music(commands.Cog):
             value=(
                 "• Works with YouTube, Spotify, and Apple Music links\n"
                 "• Type song names or paste URLs - both work!\n"
-                "• Use #help to see all commands\n"
+                "• Use $help to see all commands\n"
                 "• Bot joins your voice channel automatically\n"
                 "• AI knows what music is playing! 🎵🤖"
             ),
             inline=False
         )
 
-        embed.set_footer(text="Just start with #play and enjoy the music! 🎵")
+        embed.set_footer(text="Just start with $play and enjoy the music! 🎵")
 
         await ctx.send(embed=embed)
 
@@ -1773,7 +1772,7 @@ class Music(commands.Cog):
     async def _effects(self, ctx: commands.Context):
         """Show all available audio effects and their current state.
 
-        Usage: #effects
+        Usage: $effects
         """
         vs = ctx.voice_state
         effects = [
@@ -1792,7 +1791,7 @@ class Music(commands.Cog):
             for name, active, desc in effects
         )
         embed = discord.Embed(title="🎛️ Audio Effects", description=lines, color=discord.Color.purple())
-        embed.set_footer(text="Use #<effect> on|off to toggle. Only one effect is active at a time.")
+        embed.set_footer(text="Use $<effect> on|off to toggle. Only one effect is active at a time.")
         await ctx.send(embed=embed)
 
     @commands.command(name='ask')
@@ -1800,7 +1799,7 @@ class Music(commands.Cog):
     async def _ask(self, ctx: commands.Context, *, question: str):
         """Ask the AI a question.
 
-        Usage: #ask What's the meaning of life?
+        Usage: $ask What's the meaning of life?
         """
         if not gemini_model and not _groq_client:
             return await ctx.send("❌ AI is not available. Check API configuration.")
@@ -1851,7 +1850,7 @@ class Music(commands.Cog):
     async def _dj(self, ctx: commands.Context, *, request: str):
         """Ask the AI DJ for music suggestions and help.
 
-        Usage: #dj What should I play for a study session?
+        Usage: $dj What should I play for a study session?
         """
         if not gemini_model and not _groq_client:
             return await ctx.send("❌ AI DJ is not available. Check API configuration.")
@@ -1911,7 +1910,7 @@ If the user is asking for song recommendations or requesting you queue music, in
     async def _aistats(self, ctx: commands.Context):
         """Show AI usage statistics.
 
-        Usage: #aistats
+        Usage: $aistats
         """
         today = datetime.now().date()
         if today not in AI_USAGE:
@@ -1942,7 +1941,7 @@ If the user is asking for song recommendations or requesting you queue music, in
     async def _replay(self, ctx: commands.Context):
         """Replay the current track from the beginning.
 
-        Usage: #replay
+        Usage: $replay
         """
         if not ctx.voice_state.current:
             return await ctx.send('Nothing is currently playing.')
@@ -1955,7 +1954,7 @@ If the user is asking for song recommendations or requesting you queue music, in
     async def _history(self, ctx: commands.Context):
         """Show recently played tracks.
 
-        Usage: #history
+        Usage: $history
         """
         if not ctx.voice_state.history:
             return await ctx.send('No history yet.')
@@ -1971,10 +1970,10 @@ If the user is asking for song recommendations or requesting you queue music, in
     async def _playlist(self, ctx: commands.Context, action: str, *, name: str = ""):
         """Manage saved playlists.
 
-        Usage: #playlist save <name>
-        Usage: #playlist load <name>
-        Usage: #playlist list
-        Usage: #playlist delete <name>
+        Usage: $playlist save <name>
+        Usage: $playlist load <name>
+        Usage: $playlist list
+        Usage: $playlist delete <name>
         """
         action = action.lower().strip()
         uid = str(ctx.author.id)
@@ -1988,7 +1987,7 @@ If the user is asking for song recommendations or requesting you queue music, in
             return await ctx.send(f"Your playlists: {names}")
 
         if not name:
-            return await ctx.send(f"Usage: #playlist {action} <name>")
+            return await ctx.send(f"Usage: $playlist {action} <name>")
 
         if action == "save":
             if not ctx.voice_state.current and len(ctx.voice_state.songs) == 0:
@@ -2041,11 +2040,11 @@ If the user is asking for song recommendations or requesting you queue music, in
     async def _votemode(self, ctx: commands.Context, mode: str):
         """Enable or disable vote-skip mode.
 
-        Usage: #votemode on|off
+        Usage: $votemode on|off
         """
         mode_normalized = mode.strip().lower()
         if mode_normalized not in {"on", "off"}:
-            return await ctx.send("Usage: #votemode on|off")
+            return await ctx.send("Usage: $votemode on|off")
 
         ctx.voice_state.vote_mode = mode_normalized == "on"
         state = "enabled" if ctx.voice_state.vote_mode else "disabled"
@@ -2056,7 +2055,7 @@ If the user is asking for song recommendations or requesting you queue music, in
     async def _mood(self, ctx: commands.Context, *, mood: str):
         """Queue a preset mood playlist.
 
-        Usage: #mood happy|chill|rage|focus
+        Usage: $mood happy|chill|rage|focus
         """
         mood_key = mood.lower().strip()
         playlist = MOOD_QUERIES.get(mood_key)
@@ -2086,8 +2085,8 @@ If the user is asking for song recommendations or requesting you queue music, in
     async def _roastdj(self, ctx: commands.Context, roast_target: discord.Member = None):
         """Generate an AI-powered roast of the current DJ.
 
-        Usage: #roastdj
-        Usage: #roastdj @user
+        Usage: $roastdj
+        Usage: $roastdj @user
         """
         if roast_target is None:
             if ctx.voice_state.current:
@@ -2119,7 +2118,7 @@ If the user is asking for song recommendations or requesting you queue music, in
     async def _stats(self, ctx: commands.Context):
         """Show bot and player stats.
 
-        Usage: #stats
+        Usage: $stats
         """
         uptime_seconds = int(time.monotonic() - BOT_START_TIME)
         history_count = len(ctx.voice_state.history)
@@ -2153,7 +2152,7 @@ If the user is asking for song recommendations or requesting you queue music, in
     async def _nowbar(self, ctx: commands.Context):
         """Show a progress bar for the current track.
 
-        Usage: #nowbar
+        Usage: $nowbar
         """
         if not ctx.voice_state.current:
             return await ctx.send("Nothing is currently playing.")
@@ -2178,13 +2177,13 @@ If the user is asking for song recommendations or requesting you queue music, in
 
     @commands.command(name='play_spotify')
     async def _play_spotify(self, ctx: commands.Context):
-        """Redirects to #play — Spotify links are already supported.
+        """Redirects to $play — Spotify links are already supported.
 
-        Usage: #play_spotify
+        Usage: $play_spotify
         """
         await ctx.send(
-            "ℹ️ Direct Spotify playback isn't needed — `#play` already handles Spotify links!\n"
-            "Just paste your Spotify track or album URL directly: `#play <spotify-url>`"
+            "ℹ️ Direct Spotify playback isn't needed — `$play` already handles Spotify links!\n"
+            "Just paste your Spotify track or album URL directly: `$play <spotify-url>`"
         )
 
     @staticmethod
@@ -2293,9 +2292,9 @@ If the user is asking for song recommendations or requesting you queue music, in
     async def _bard(self, ctx: commands.Context, *, request: str):
         """Ask Joe Barden the Bard for music — he'll ramble, then queue songs for you.
 
-        Usage: #bard play me something for a rainy day
-        Usage: #bard I want epic battle music
-        Usage: #bard what goes well with late night vibes?
+        Usage: $bard play me something for a rainy day
+        Usage: $bard I want epic battle music
+        Usage: $bard what goes well with late night vibes?
         """
         if not gemini_model and not _groq_client:
             return await ctx.send("❌ The Bard's tongue is silent. Check API configuration.")
@@ -2372,7 +2371,7 @@ Then provide QUEUE_SONGS with 3-5 real, searchable song titles that match the re
                 if added:
                     await ctx.send(f"✅ *The Bard nods — {added} song(s) added to the queue.*")
             else:
-                await ctx.send("*(The Bard didn't name any specific songs — use `#play` to queue your own!)*")
+                await ctx.send("*(The Bard didn't name any specific songs — use `$play` to queue your own!)*")
 
         except GeminiQuotaError:
             await ctx.send(BARD_QUOTA_MESSAGE)
@@ -2385,8 +2384,8 @@ Then provide QUEUE_SONGS with 3-5 real, searchable song titles that match the re
     async def _shit(self, ctx: commands.Context):
         """Send a random quote response.
 
-        Usage: #shit
-        Aliases: #tourette, #fuck, #youdonottellme
+        Usage: $shit
+        Aliases: $tourette, $fuck, $youdonottellme
         """
         quotes = [
             'Piss. Holy shit. Damnit. Fuck the lottery, shit.',
