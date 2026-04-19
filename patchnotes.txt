@@ -4,10 +4,9 @@ Summary
 - AI persona overhaul: tighter Biden-isms, less verbosity, more authentic voice. Fixed YouTube single-video playlist extraction bug. Removed redundant $dj command.
 
 🤖 AI PERSONA UPDATE
-- Rewrote BARD_SYSTEM_PROMPT for tighter, more authentic Biden voice.
+- Rewrote AI persona for tighter, more authentic Biden voice.
 - Word limit reduced: 400 words → 150 words (no more novels).
 - Lean into folksy Biden-isms: "Look, here's the deal," "Not a joke," "No malarkey," "C'mon, man."
-- Still a Skyrim bard at heart — just less meandering, more direct.
 - When recommending songs, AI now outputs cleaner QUEUE_SONGS format.
 
 🔧 BUG FIX: YOUTUBE PLAYLIST EXTRACTION
