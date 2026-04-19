@@ -1,3 +1,33 @@
+v3.2.4
+
+Summary
+- AI persona overhaul: tighter Biden-isms, less verbosity, more authentic voice. Fixed YouTube single-video playlist extraction bug. Removed redundant $dj command.
+
+🤖 AI PERSONA UPDATE
+- Rewrote BARD_SYSTEM_PROMPT for tighter, more authentic Biden voice.
+- Word limit reduced: 400 words → 150 words (no more novels).
+- Lean into folksy Biden-isms: "Look, here's the deal," "Not a joke," "No malarkey," "C'mon, man."
+- Still a Skyrim bard at heart — just less meandering, more direct.
+- When recommending songs, AI now outputs cleaner QUEUE_SONGS format.
+
+🔧 BUG FIX: YOUTUBE PLAYLIST EXTRACTION
+- FIXED: Certain YouTube URLs (e.g., youtu.be with si= tracking param) intermittently queued up to 50 songs.
+- Root cause: 'extract_flat': 'in_playlist' in YTDL_OPTIONS conflicted with 'noplaylist': True.
+- Removed extract_flat from YTDL_OPTIONS — single-video extraction now properly isolated.
+- Playlist functionality preserved via YTDL_PLAYLIST_OPTIONS.
+
+🧹 CLEANUP
+- REMOVED: $dj command (redundant with $bard, which also queues songs via QUEUE_SONGS).
+- Updated $help and $usage menus to remove $dj references.
+
+🎵 PLAYLIST LIMIT REDUCED
+- Playlist import limit: 50 tracks → 25 tracks.
+- Users can still queue unlimited songs individually; only playlist bulk-import is capped.
+
+🔊 DEFAULT VOLUME CHANGE
+- Default volume on channel join: 50% → 100%.
+- Users can still adjust with $volume 0-100 as needed.
+
 v3.2.3
 
 Summary
@@ -5,7 +35,7 @@ Summary
 
 🤖 NEW: GROQ AI FALLBACK
 - Added generate_content_with_groq() and a top-level generate_content() dispatcher.
-- All AI commands (#ask, #dj, #bard, #roastdj) now route through generate_content(), which tries Gemini first and falls through to Groq only on full Gemini failure (outage, key issues, all models exhausted).
+- All AI commands ($ask, $bard, $roastdj) now route through generate_content(), which tries Gemini first and falls through to Groq only on full Gemini failure (outage, key issues, all models exhausted).
 - Groq quota errors do NOT trigger fallback — daily quota exhaustion still surfaces the BARD_QUOTA_MESSAGE correctly.
 - Groq models tried in order: llama-3.3-70b-versatile → llama-3.1-8b-instant → mixtral-8x7b-32768.
 - Groq is optional: set GROQ_API_KEY in .env to enable. If absent, bot warns at startup and skips Groq silently.

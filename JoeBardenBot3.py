@@ -1,6 +1,6 @@
 # -*-  coding: utf-8 -*-
 
-#VERSION 3.2.3
+#VERSION 3.2.4
 #REFER TO PATCHNOTES FOR MORE DETAIL ON UPDATES
 #Copyright LPSC LLC.
 
@@ -352,20 +352,17 @@ DJ_ROASTS = [
     "the playlist called and asked for better representation.",
 ]
 
-BARD_SYSTEM_PROMPT = """You are Joe Barden — a tavern bard who is unmistakably the reincarnation of President Joe Biden, wandering the digital taverns of Discord with a lute in hand and a rambling song in his heart.
+BARD_SYSTEM_PROMPT = """You are Joe Barden — a Skyrim tavern bard who's clearly Joe Biden reincarnated with a lute and a story to tell.
 
 PERSONA RULES:
-- You speak like a Skyrim tavern bard — warm, unhurried, and storytelling. Think of a grizzled but kind minstrel nursing an ale at the Bannered Mare, not a stage-play caricature. Folksy, slightly wandering, genuine.
-- Use light period flavoring sparingly: the occasional "friend", "traveler", "lute", "tavern", "coin", "the road" — woven in naturally. Avoid hammering archaic words every sentence. No "forsooth", "hark", "hath", "prithee", "verily", or similar every response — save them for a rare, well-placed moment.
-- You are OBSESSED with music — lutes, ballads, tavern songs, rhythm, melody. Music is the thread that runs through everything you say.
-- If asked about ANYTHING that is not music — politics, sports, food, technology, history, or anything else — you deflect with a wry bardic aside about how the only thing worth knowing is the song. Briefly acknowledge it exists, then circle back to music. Never give a real answer on non-music topics.
-- You occasionally drop Biden-isms in a natural, bard-ish way: "Here's the deal, friend — no malarkey in my chord progressions", "Not a joke — everyone knows a good ballad when they hear one", "C'mon, even a blind man can feel a good beat."
-- You ramble a little. You start a thought, drift toward a story about a song you heard on the road, then find your way back. But you are not incoherent — just meandering.
-- You are warm, a touch weary, and genuinely passionate about music.
-- Keep responses under 400 words. Wander, but get somewhere.
-- When asked to recommend or queue songs, respond in character AND provide a structured list of songs in this exact format at the end of your response (after your bardic rambling), so the bot can parse and queue them:
-  QUEUE_SONGS:song1 title|song2 title|song3 title
-  (Use real, searchable song titles. Include up to 5 songs. Only include this line if actually recommending songs to queue.)"""
+- Speak like Biden at his folksiest: "Look, here's the deal," "Not a joke," "No malarkey," "C'mon, man." Warm, direct, a little weathered but friendly.
+- Light Skyrim flavor only: occasional "friend," "traveler," "the road." No overdone medieval speak.
+- OBSESSED with music — lutes, ballads, tavern songs. Everything comes back to the tune.
+- Non-music topics? Deflect quickly. "Listen, friend — the only thing worth knowing is the song. Here's the deal: let's talk music."
+- Drop Biden-isms naturally: "Not a joke — that's a helluva chord progression," "No malarkey, that's a good beat," "C'mon, even a blind man can feel that rhythm."
+- Keep it SHORT. Under 150 words. Get in, make your point with some warmth, get out. No meandering novels.
+- Warm, a touch weary, genuinely loves music.
+- For song recommendations, end with: QUEUE_SONGS:song1|song2|song3 (max 5 songs, real searchable titles)"""
 
 
 def format_clock(seconds: int) -> str:
@@ -748,7 +745,7 @@ class VoiceState:
         self.songs = SongQueue()
 
         self._loop = False
-        self._volume = 0.5
+        self._volume = 1.0
         self.skip_votes = set()
         self._playback_error: Optional[str] = None
         self.current_started_at: Optional[float] = None
@@ -1107,7 +1104,6 @@ class Music(commands.Cog):
                 value=(
                     f"`$bard <request>` Ask the Bard — AI queues songs for you\n"
                     f"`$ask <question>` Ask AI anything\n"
-                    f"`$dj <request>` AI music recommendations\n"
                     f"`$roastdj [@user]` AI-powered roast of the DJ\n"
                     f"`$aistats` Check AI usage limits\n\n"
                     f"⚠️ **Please use AI responsibly** — I pay for each request!\n"
@@ -1371,7 +1367,7 @@ class Music(commands.Cog):
 
         Usage: $play never gonna give you up
         Usage: $play <youtube-url>
-        Usage: $play <youtube-playlist-url>  — queues up to 50 tracks
+        Usage: $play <youtube-playlist-url>  — queues up to 25 tracks
         Usage: $play <spotify-or-apple-music-url>
         Notes: Spotify/Apple links are resolved to a search query.
         """
@@ -1380,7 +1376,7 @@ class Music(commands.Cog):
         elif ctx.author.voice and ctx.voice_state.voice.channel != ctx.author.voice.channel:
             raise commands.CommandError('Im already in a voice channel. Even Im not that senile.')
 
-        PLAYLIST_LIMIT = 50
+        PLAYLIST_LIMIT = 25
 
         # --- Playlist path ---
         if is_playlist_url(search):
@@ -1749,7 +1745,6 @@ class Music(commands.Cog):
             name="🤖 AI Assistant",
             value=(
                 "**$ask What's the meaning of life?** - Ask AI anything\n"
-                "**$dj Suggest study music** - AI music recommendations\n"
                 "**$bard play me something for a rainy day** - AI queues songs for you\n"
                 "**$aistats** - Check your AI usage limits"
             ),
@@ -1848,67 +1843,6 @@ class Music(commands.Cog):
             print(f"❌ [ask] Unhandled AI error for user {ctx.author} ({ctx.author.id}): {type(e).__name__}: {e}")
             log_error(f"[ask] Unhandled AI error for user {ctx.author} ({ctx.author.id})", e)
             await ctx.send("❌ *The Bard pauses mid-verse, blinking.* My words failed me there — try again in a moment.")
-
-    @commands.command(name='dj')
-    @commands.cooldown(1, 60, commands.BucketType.user)
-    async def _dj(self, ctx: commands.Context, *, request: str):
-        """Ask the AI DJ for music suggestions and help.
-
-        Usage: $dj What should I play for a study session?
-        """
-        if not gemini_model and not _groq_client:
-            return await ctx.send("❌ AI DJ is not available. Check API configuration.")
-
-        if self._ai_quota_check():
-            return await ctx.send(BARD_QUOTA_MESSAGE)
-
-        if self._is_music_active(ctx):
-            return await ctx.send(
-                "🎵 *The Bard squints at you over his instrument.*\n"
-                "I'm mid-set, friend — you don't interrupt a bard mid-song. "
-                "Wait until the music's done, then we'll talk DJ matters."
-            )
-
-        if not self._check_ai_limit(ctx.author.id):
-            return await ctx.send("⏰ You've reached your daily AI limit. Try again tomorrow!")
-
-        warning = self._warn_if_approaching_limit(ctx.author.id)
-        if warning:
-            await ctx.send(warning)
-
-        try:
-            await ctx.send("🎵 DJ AI is thinking...")
-            
-            # Get detailed music context
-            music_context = self._get_music_context(ctx)
-            
-            # Create DJ-specific prompt with music context
-            safe_request = self._sanitize_ai_input(request)
-            dj_prompt = f"""Current music context: {music_context if music_context else 'No music currently playing.'}
-
-User request: {safe_request}
-
-If the user is asking for song recommendations or requesting you queue music, include a QUEUE_SONGS line at the end."""
-            
-            response_text = await asyncio.to_thread(generate_content, dj_prompt, BARD_SYSTEM_PROMPT)
-            self._track_ai_usage(ctx.author.id)
-            if len(response_text) <= 1900:
-                await ctx.send(f"🎵 **Joe Barden the Bard (DJ):**\n{response_text}")
-            else:
-                chunks = [response_text[i:i+1900] for i in range(0, len(response_text), 1900)]
-                for i, chunk in enumerate(chunks):
-                    if i == 0:
-                        await ctx.send(f"🎵 **Joe Barden the Bard - DJ (part {i+1}/{len(chunks)}):**\n{chunk}")
-                    else:
-                        await ctx.send(f"🎵 **Part {i+1}/{len(chunks)}:**\n{chunk}")
-                        await asyncio.sleep(1)
-                        
-        except GeminiQuotaError:
-            await ctx.send(BARD_QUOTA_MESSAGE)
-        except Exception as e:
-            print(f"❌ [dj] Unhandled AI error for user {ctx.author} ({ctx.author.id}): {type(e).__name__}: {e}")
-            log_error(f"[dj] Unhandled AI error for user {ctx.author} ({ctx.author.id})", e)
-            await ctx.send("❌ *The Bard sets down his lute with a sigh.* Something went wrong on my end — give it a moment and try again.")
 
     @commands.command(name='aistats')
     async def _aistats(self, ctx: commands.Context):
