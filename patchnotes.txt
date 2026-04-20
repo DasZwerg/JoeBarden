@@ -1,3 +1,29 @@
+v3.2.5
+
+Summary
+- Bug fix release. Resolves an event loop busy-loop on loop mode, orphaned audio player tasks after $leave, an unguarded JSON decode in oEmbed resolution, a broken embed uploader link, and a Groq fallback bypass during Gemini quota exhaustion.
+
+🔧 BUG FIX: EVENT LOOP BUSY-LOOP
+- FIXED: When $loop was enabled and no track was set (e.g. after a playback error), audio_player_task entered a tight CPU-spinning busy-loop with no await point, stalling the entire bot event loop.
+- Added await asyncio.sleep(0) before continue to yield control back to the event loop in this code path.
+
+🔧 BUG FIX: ORPHANED AUDIO PLAYER TASK
+- FIXED: $leave ($disconnect) called VoiceState.stop() which disconnected voice and cleared the queue but never cancelled the audio_player asyncio task.
+- The orphaned task remained alive, blocking on a 180s idle timeout, holding a reference to the old VoiceState and preventing garbage collection. Repeated $leave/$join cycles accumulated zombie tasks.
+- stop() now explicitly cancels audio_player and sets current = None before disconnecting.
+
+🔧 BUG FIX: OEMBED JSON DECODE CRASH
+- FIXED: _fetch_oembed_metadata() called json.loads() without a try/except. A non-JSON response (e.g. an HTML error page from a Spotify or Apple Music oEmbed endpoint) would raise an unhandled json.JSONDecodeError, crashing $play for those link types.
+- json.loads() is now guarded and raises a clear ValueError on decode failure, which is caught cleanly by the caller.
+
+🔧 BUG FIX: BROKEN UPLOADER EMBED LINK
+- FIXED: Song.create_embed() built the Uploader field as [{uploader}]({uploader_url}) without null-checking uploader_url. When uploader_url was absent (common for some extractors), Discord rendered a literal [None](None) broken hyperlink.
+- Uploader field now renders as a plain name when URL is absent, and falls back to "Unknown" when uploader name is also missing.
+
+🔧 BUG FIX: GROQ FALLBACK BYPASSED DURING GEMINI QUOTA
+- FIXED: _ai_quota_check() returned True during Gemini quota exhaustion and immediately sent BARD_QUOTA_MESSAGE, bypassing Groq entirely — even when a working Groq client was configured.
+- $ask, $bard, and $roastdj now only gate on quota exhaustion when Groq is also unavailable. If _groq_client is set, requests proceed and generate_content() routes to Groq as intended.
+
 v3.2.4
 
 Summary

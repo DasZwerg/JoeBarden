@@ -1,6 +1,6 @@
 # -*-  coding: utf-8 -*-
 
-#VERSION 3.2.4
+#VERSION 3.2.5
 #REFER TO PATCHNOTES FOR MORE DETAIL ON UPDATES
 #Copyright LPSC LLC.
 
