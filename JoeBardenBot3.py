@@ -400,7 +400,10 @@ def _fetch_oembed_metadata(url: str, endpoint: str) -> Optional[dict]:
 
     with urllib.request.urlopen(req, timeout=URL_RESOLVE_TIMEOUT_SECONDS) as response:
         payload = response.read().decode("utf-8", errors="replace")
-        return json.loads(payload)
+        try:
+            return json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"oEmbed endpoint returned non-JSON response: {exc}") from exc
 
 
 def resolve_music_link_to_query(value: str) -> tuple[str, Optional[str]]:
@@ -693,12 +696,15 @@ class Song:
         self.requester = source.requester
 
     def create_embed(self):
+        uploader = self.source.uploader or "Unknown"
+        uploader_url = self.source.uploader_url
+        uploader_value = f"[{uploader}]({uploader_url})" if uploader_url else uploader
         embed = (discord.Embed(title='Now playing',
                                description='```css\n{0.source.title}\n```'.format(self),
                                color=discord.Color.blurple())
                  .add_field(name='Duration', value=self.source.duration)
                  .add_field(name='Requested by', value=self.requester.mention)
-                 .add_field(name='Uploader', value='[{0.source.uploader}]({0.source.uploader_url})'.format(self))
+                 .add_field(name='Uploader', value=uploader_value)
                  .add_field(name='URL', value='[Click]({0.source.url})'.format(self))
                  .set_thumbnail(url=self.source.thumbnail))
 
@@ -810,6 +816,7 @@ class VoiceState:
                     return
 
             if self.current is None:
+                await asyncio.sleep(0)
                 continue
 
             self.skip_votes.clear()
@@ -944,8 +951,12 @@ class VoiceState:
 
     async def stop(self):
         self.songs.clear()
+        self.current = None
         self.current_started_at = None
         self._reset_effects()
+
+        if hasattr(self, "audio_player") and not self.audio_player.done():
+            self.audio_player.cancel()
 
         if self.voice:
             if self.voice.is_playing() or self.voice.is_paused():
@@ -1803,7 +1814,7 @@ class Music(commands.Cog):
         if not gemini_model and not _groq_client:
             return await ctx.send("❌ AI is not available. Check API configuration.")
 
-        if self._ai_quota_check():
+        if self._ai_quota_check() and not _groq_client:
             return await ctx.send(BARD_QUOTA_MESSAGE)
 
         if self._is_music_active(ctx):
@@ -2032,7 +2043,7 @@ class Music(commands.Cog):
             else:
                 roast_target = ctx.author
 
-        if (not gemini_model and not _groq_client) or self._ai_quota_check():
+        if (not gemini_model and not _groq_client) or (self._ai_quota_check() and not _groq_client):
             return await ctx.send(f"{roast_target.mention}, {random.choice(DJ_ROASTS)}")
 
         try:
@@ -2237,7 +2248,7 @@ class Music(commands.Cog):
         if not gemini_model and not _groq_client:
             return await ctx.send("❌ The Bard's tongue is silent. Check API configuration.")
 
-        if self._ai_quota_check():
+        if self._ai_quota_check() and not _groq_client:
             return await ctx.send(BARD_QUOTA_MESSAGE)
 
         if self._is_music_active(ctx):
