@@ -373,6 +373,25 @@ def format_clock(seconds: int) -> str:
     return f"{minutes:02}:{secs:02}"
 
 
+def _split_patchnote_blocks(content: str) -> list[str]:
+    """Split patchnotes.txt content into a list of per-version blocks.
+
+    Each block starts with a line matching ^vX (e.g. 'v3.2.5').
+    Returns blocks in file order (newest first).
+    """
+    blocks: list[str] = []
+    current: list[str] = []
+    for line in content.splitlines():
+        if re.match(r'^v\d', line) and current:
+            blocks.append("\n".join(current))
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        blocks.append("\n".join(current))
+    return blocks
+
+
 def is_playlist_url(value: str) -> bool:
     """Return True if the URL looks like a YouTube/SoundCloud/etc. playlist."""
     return bool(re.search(
@@ -1637,7 +1656,7 @@ class Music(commands.Cog):
 
     @commands.command(name='patchnotes')
     async def _patchnotes(self, ctx: commands.Context):
-        """Show a summary of the latest patch notes.
+        """Show the latest patch notes in Discord.
 
         Usage: $patchnotes
         """
@@ -1646,38 +1665,46 @@ class Music(commands.Cog):
             with open(patchnotes_path, encoding="utf-8") as f:
                 content = f.read().strip()
 
-            # Extract only the first version block
-            lines = content.splitlines()
-            block: list[str] = []
-            found_first = False
-            for line in lines:
-                if re.match(r'^v\d', line):
-                    if found_first:
-                        break
-                    found_first = True
-                if found_first:
-                    block.append(line)
+            blocks = _split_patchnote_blocks(content)
+            if not blocks:
+                await ctx.send("❌ No patch notes found.")
+                return
 
-            summary = "\n".join(block).strip() if block else content
-            if len(summary) <= 1900:
-                await ctx.send(summary)
+            latest = blocks[0].strip()
+            wrapped = f"```\n{latest}\n```"
+            if len(wrapped) <= 1990:
+                await ctx.send(wrapped)
             else:
-                await ctx.send(summary[:1900] + "\n\n*...truncated — use `$patchnotes_long` for full history.*")
+                truncated = latest[:1900].rsplit("\n", 1)[0]
+                await ctx.send(f"```\n{truncated}\n```\n*...truncated — use `$patchnotes_long` for full history.*")
         except FileNotFoundError:
             await ctx.send("❌ patchnotes.txt was not found.")
 
     @commands.command(name='patchnotes_long')
     async def _patchnotes_long(self, ctx: commands.Context):
-        """Download the full version history as a file.
+        """Show the full version history across multiple messages, one version per message.
 
         Usage: $patchnotes_long
         """
         patchnotes_path = os.path.join(os.path.dirname(__file__), "patchnotes.txt")
         try:
-            await ctx.send(
-                "📜 Full version history:",
-                file=discord.File(patchnotes_path, filename="patchnotes.txt")
-            )
+            with open(patchnotes_path, encoding="utf-8") as f:
+                content = f.read().strip()
+
+            blocks = _split_patchnote_blocks(content)
+            if not blocks:
+                await ctx.send("❌ No patch notes found.")
+                return
+
+            await ctx.send(f"📜 **Full version history — {len(blocks)} release(s):**")
+            for block in blocks:
+                block = block.strip()
+                wrapped = f"```\n{block}\n```"
+                if len(wrapped) <= 1990:
+                    await ctx.send(wrapped)
+                else:
+                    chunk = block[:1900].rsplit("\n", 1)[0]
+                    await ctx.send(f"```\n{chunk}\n```\n*...entry truncated*")
         except FileNotFoundError:
             await ctx.send("❌ patchnotes.txt was not found.")
 
