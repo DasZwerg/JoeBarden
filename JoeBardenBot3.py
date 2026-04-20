@@ -721,6 +721,47 @@ class YTDLSource(discord.PCMVolumeTransformer):
         return ', '.join(segments)
 
 
+class LocalAudioSource:
+    """Minimal audio-source wrapper for a local file (e.g. a .wav easter egg).
+
+    Exposes only the fields that audio_player_task reads so it can be wrapped
+    in a Song and injected into the SongQueue via put_front().
+    url is intentionally None so the yt-dlp re-resolve step is skipped and
+    stream_url (the absolute local path) is used directly by FFmpeg.
+    """
+
+    FFMPEG_LOCAL_OPTIONS: dict[str, Any] = {
+        'executable': 'ffmpeg',
+        'before_options': '',
+        'options': '-vn',
+    }
+
+    def __init__(self, path: str, ctx: commands.Context, title: str = "Biden Blast"):
+        self.stream_url: str = path
+        self.url: Optional[str] = None
+        self.title: str = title
+        self.channel = ctx.channel
+        self.requester = ctx.author
+        self.uploader: Optional[str] = None
+        self.uploader_url: Optional[str] = None
+        self.upload_date: str = "unknown"
+        self.thumbnail: Optional[str] = None
+        self.description: Optional[str] = None
+        self.duration: str = "unknown"
+        self.duration_seconds: int = 0
+        self.tags: Optional[list] = None
+        self.views: Optional[int] = None
+        self.likes: Optional[int] = None
+        self.dislikes: Optional[int] = None
+        self.data: dict[str, Any] = {'url': path}
+
+    def create_embed(self):
+        return None
+
+    def __str__(self):
+        return self.title
+
+
 class Song:
     __slots__ = ('source', 'requester')
 
@@ -729,6 +770,8 @@ class Song:
         self.requester = source.requester
 
     def create_embed(self):
+        if not isinstance(self.source, YTDLSource):
+            return self.source.create_embed()
         uploader = self.source.uploader or "Unknown"
         uploader_url = self.source.uploader_url
         uploader_value = f"[{uploader}]({uploader_url})" if uploader_url else uploader
@@ -931,10 +974,12 @@ class VoiceState:
                     self.history.append(self.current)
                     if len(self.history) > self.history_limit:
                         self.history.pop(0)
-                    try:
-                        await channel.send(embed=self.current.create_embed())
-                    except discord.Forbidden:
-                        pass
+                    embed = self.current.create_embed()
+                    if embed is not None:
+                        try:
+                            await channel.send(embed=embed)
+                        except discord.Forbidden:
+                            pass
                     played = True
 
             except FileNotFoundError:
@@ -2406,6 +2451,52 @@ Then provide QUEUE_SONGS with 3-5 real, searchable song titles that match the re
         await ctx.send(response)
         await ctx.message.add_reaction('🖕')
 
+    @commands.command(name='bidenblast', hidden=True)
+    async def _bidenblast(self, ctx: commands.Context):
+        await _trigger_biden_blast(self, ctx)
+
+
+async def _trigger_biden_blast(cog: 'Music', ctx: commands.Context) -> None:
+    """Core logic for the BidenBlast easter egg.
+
+    Called by both the $bidenblast command and the 'biden blast' text trigger.
+    Resolves the .wav one directory above the bot file.
+    - If music is playing or queued: injects the .wav at the front of the queue
+      (plays next, silently — no embed, no chat noise).
+    - If bot is in voice but idle: plays immediately.
+    - If bot is not in voice but user is: joins and plays immediately.
+    - If neither: silent no-op (easter egg stays hidden).
+    """
+    blast_path = os.path.normpath(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "BidenBlast.wav")
+    )
+    if not os.path.isfile(blast_path):
+        return
+
+    voice_state = cog.get_voice_state(ctx)
+
+    if not voice_state.voice or not voice_state.voice.is_connected():
+        if not ctx.author.voice or not ctx.author.voice.channel:
+            return
+        try:
+            voice_state.voice = await ctx.author.voice.channel.connect()
+        except Exception:
+            return
+
+    local_source = LocalAudioSource(blast_path, ctx)
+
+    if voice_state.is_playing or len(voice_state.songs) > 0:
+        song = Song(local_source)
+        voice_state.songs.put_front(song)
+    else:
+        try:
+            ffmpeg_source = discord.FFmpegPCMAudio(blast_path)
+            playback_source = discord.PCMVolumeTransformer(ffmpeg_source, volume=voice_state.volume)
+            voice_state.voice.play(playback_source, after=voice_state.play_next_song)
+            voice_state.current_started_at = time.monotonic()
+        except Exception as exc:
+            log_error("[BidenBlast] Playback failed", exc)
+
 
 def random_guild_emoji(guild: Optional[discord.Guild]):
     if guild and guild.emojis:
@@ -2423,6 +2514,13 @@ async def on_message(message):
     await bot.process_commands(message)
 
     content = message.content.lower()
+
+    if "biden blast" in content:
+        cog = bot.get_cog("Music")
+        if cog:
+            ctx = await bot.get_context(message)
+            await _trigger_biden_blast(cog, ctx)
+        return
 
     if "sleepy joe" in content:
         await message.channel.send("That hurts my feelings.")
