@@ -1,0 +1,222 @@
+v3.2.5
+
+Summary
+- Bug fix release. Resolves an event loop busy-loop on loop mode, orphaned audio player tasks after $leave, an unguarded JSON decode in oEmbed resolution, a broken embed uploader link, and a Groq fallback bypass during Gemini quota exhaustion.
+
+🔧 BUG FIX: EVENT LOOP BUSY-LOOP
+- FIXED: When $loop was enabled and no track was set (e.g. after a playback error), audio_player_task entered a tight CPU-spinning busy-loop with no await point, stalling the entire bot event loop.
+- Added await asyncio.sleep(0) before continue to yield control back to the event loop in this code path.
+
+🔧 BUG FIX: ORPHANED AUDIO PLAYER TASK
+- FIXED: $leave ($disconnect) called VoiceState.stop() which disconnected voice and cleared the queue but never cancelled the audio_player asyncio task.
+- The orphaned task remained alive, blocking on a 180s idle timeout, holding a reference to the old VoiceState and preventing garbage collection. Repeated $leave/$join cycles accumulated zombie tasks.
+- stop() now explicitly cancels audio_player and sets current = None before disconnecting.
+
+🔧 BUG FIX: OEMBED JSON DECODE CRASH
+- FIXED: _fetch_oembed_metadata() called json.loads() without a try/except. A non-JSON response (e.g. an HTML error page from a Spotify or Apple Music oEmbed endpoint) would raise an unhandled json.JSONDecodeError, crashing $play for those link types.
+- json.loads() is now guarded and raises a clear ValueError on decode failure, which is caught cleanly by the caller.
+
+🔧 BUG FIX: BROKEN UPLOADER EMBED LINK
+- FIXED: Song.create_embed() built the Uploader field as [{uploader}]({uploader_url}) without null-checking uploader_url. When uploader_url was absent (common for some extractors), Discord rendered a literal [None](None) broken hyperlink.
+- Uploader field now renders as a plain name when URL is absent, and falls back to "Unknown" when uploader name is also missing.
+
+🔧 BUG FIX: GROQ FALLBACK BYPASSED DURING GEMINI QUOTA
+- FIXED: _ai_quota_check() returned True during Gemini quota exhaustion and immediately sent BARD_QUOTA_MESSAGE, bypassing Groq entirely — even when a working Groq client was configured.
+- $ask, $bard, and $roastdj now only gate on quota exhaustion when Groq is also unavailable. If _groq_client is set, requests proceed and generate_content() routes to Groq as intended.
+
+v3.2.4
+
+Summary
+- AI persona overhaul: tighter Biden-isms, less verbosity, more authentic voice. Fixed YouTube single-video playlist extraction bug. Removed redundant $dj command.
+
+🤖 AI PERSONA UPDATE
+- Rewrote AI persona for tighter, more authentic Biden voice.
+- Word limit reduced: 400 words → 150 words (no more novels).
+- Lean into folksy Biden-isms: "Look, here's the deal," "Not a joke," "No malarkey," "C'mon, man."
+- When recommending songs, AI now outputs cleaner QUEUE_SONGS format.
+
+🔧 BUG FIX: YOUTUBE PLAYLIST EXTRACTION
+- FIXED: Certain YouTube URLs (e.g., youtu.be with si= tracking param) intermittently queued up to 50 songs.
+- Root cause: 'extract_flat': 'in_playlist' in YTDL_OPTIONS conflicted with 'noplaylist': True.
+- Removed extract_flat from YTDL_OPTIONS — single-video extraction now properly isolated.
+- Playlist functionality preserved via YTDL_PLAYLIST_OPTIONS.
+
+🧹 CLEANUP
+- REMOVED: $dj command (redundant with $bard, which also queues songs via QUEUE_SONGS).
+- Updated $help and $usage menus to remove $dj references.
+
+🎵 PLAYLIST LIMIT REDUCED
+- Playlist import limit: 50 tracks → 25 tracks.
+- Users can still queue unlimited songs individually; only playlist bulk-import is capped.
+
+🔊 DEFAULT VOLUME CHANGE
+- Default volume on channel join: 50% → 100%.
+- Users can still adjust with $volume 0-100 as needed.
+
+v3.2.3
+
+Summary
+- Production promotion of the v3.2.3 Beta build. Integrates Groq (Llama/Mixtral) as a cross-provider AI fallback, hardens security, and fixes a critical bot startup defect. All beta references removed.
+
+🤖 NEW: GROQ AI FALLBACK
+- Added generate_content_with_groq() and a top-level generate_content() dispatcher.
+- All AI commands ($ask, $bard, $roastdj) now route through generate_content(), which tries Gemini first and falls through to Groq only on full Gemini failure (outage, key issues, all models exhausted).
+- Groq quota errors do NOT trigger fallback — daily quota exhaustion still surfaces the BARD_QUOTA_MESSAGE correctly.
+- Groq models tried in order: llama-3.3-70b-versatile → llama-3.1-8b-instant → mixtral-8x7b-32768.
+- Groq is optional: set GROQ_API_KEY in .env to enable. If absent, bot warns at startup and skips Groq silently.
+- Free Groq key: https://console.groq.com — email signup, no billing, ~60 seconds. Difficulty: 1/5.
+- AI availability guards updated across all commands to check both Gemini and Groq, not just Gemini.
+- openai>=1.0.0 added to requirements.txt (used as the Groq API compatibility layer).
+
+🔧 CRITICAL FIX: BOT STARTUP
+- FIXED: bot.run(token) was missing from the Beta source — bot would import successfully but never start. Added.
+
+🔒 SECURITY
+- FIXED: _roastdj now sanitizes roast_target.display_name through _sanitize_ai_input() before embedding in AI prompt. Prevents user-controlled display names from being used as prompt injection vectors.
+- REMOVED: Unknown package 'davey' from requirements.txt (no code references; potential typosquat risk).
+
+🔁 AI MODEL SELECTION (carried from Beta)
+- Replaced deprecated get_best_available_model() / client.models.list() call (removed in google-genai SDK 1.0+) with a hardcoded preferred-model list validated asynchronously in on_ready.
+- Models probed in order: gemini-2.5-flash → gemini-1.5-flash → gemini-1.5-pro → gemini-2.0-flash.
+
+🎛️ INTENTS HARDENING
+- Replaced discord.Intents.all() (over-permissioned) with a minimal explicit intent set: guilds, voice_states, guild_messages, message_content, members.
+
+v3.0
+
+Summary
+- Production release incorporating all beta-tested fixes. Resolves the critical "enqueued but nothing plays" idle bug, reworks FFmpeg process management, adds stream URL re-resolution, and improves state cleanup on disconnect.
+
+🔧 CRITICAL FIX: STALE PLAYBACK BUG
+- FIXED: Songs would enqueue but never play after the bot sat idle for ~3 minutes. Root cause: the internal audio player task died on idle timeout but the bot kept reusing the dead session. New songs went into a queue nobody was consuming.
+- FIXED: "Already playing audio" errors caused by stale voice client state after Discord voice reconnects. The bot now force-clears any stuck player before starting a new track.
+- FIXED: Redundant manual ffmpeg process tracking that conflicted with discord.py's own cleanup — caused the "ffmpeg process should have terminated with return code of -9" log spam and potential double-termination issues. Removed entirely; discord.py manages ffmpeg lifecycle internally.
+- Added voice connection health check (is_connected) before attempting playback.
+- Added stream URL re-resolution at play time to avoid stale/expired YouTube URLs.
+- Added diagnostic logging throughout the player lifecycle for easier future debugging.
+
+🔁 REWORKED: LOOP COMMAND
+- $loop now requires on/off flag ($loop on / $loop off) — consistent with all other effect commands.
+- $stop now explicitly disables loop, so loop can no longer override a stop command.
+- Loop state is displayed with a clear text message instead of just a reaction.
+
+🧹 STATE CLEANUP ON DISCONNECT
+- All effect and loop states are now reset when the bot disconnects — whether via $leave, $stop, or idle timeout.
+- New internal _reset_effects() helper ensures loop, nightcore, slowmo, vaporwave, reverse, bass, lofi, echo, tremolo, and fadein are all cleared to defaults on disconnect.
+- Prevents stale effect settings from carrying over into the next listening session.
+
+📋 UPDATED HELP
+- Help menu updated to show $loop on|off syntax.
+
+v2.4
+
+Bugfixes
+- Removed references to the old bot name
+
+Summary
+- Major update with AI integration, advanced audio effects, FFmpeg fixes, and command prefix change. This is the biggest feature update yet!
+
+🤖 NEW: AI INTEGRATION
+- Added Google Gemini AI integration with free tier support (1,500 requests/day)
+- Added $ask command for general Q&A with context awareness
+- Added $dj command for music recommendations and DJ assistance
+- Added $chat command for private AI conversations in DMs
+- Added $aistats command to monitor AI usage and limits
+- AI is music-aware - knows current song, queue, and active effects
+- Built-in rate limiting and usage tracking to prevent abuse
+- Smart error handling for API failures and rate limits
+
+🎛️ NEW: ADVANCED AUDIO EFFECTS
+- Added $slowmo on/off - Slow down music by 15% (opposite of nightcore)
+- Added $vaporwave on/off - Aesthetic slowed + echo effect
+- Added $reverse on/off - Play music backwards for party tricks
+- Added $bass on/off - Heavy bass boost for party vibes
+- Added $lofi on/off - Crunchy vintage lo-fi sound for study sessions
+- Added $echo on/off - Triple echo chamber for atmospheric effects
+- Added $tremolo on/off - Pulsing tremolo effect for rave vibes
+- Added $fadein on/off - Smooth fade-in for professional transitions
+- Added $effects command to show all available effects and status
+- Only one effect can be active at a time (auto-switching)
+- Enhanced FFmpeg options with timeout protection (50 minutes)
+- All effects use professional-grade FFmpeg audio filters
+- REMOVED: $robot effect (had technical issues)
+
+🔧 CRITICAL FIXES
+- FIXED: FFmpeg termination errors that caused bot to become unresponsive
+- FIXED: "failed to terminate -9" errors with proper process cleanup
+- FIXED: Memory leaks from unclosed FFmpeg processes
+- Added thread-safe cleanup with asyncio.Lock()
+- Enhanced error handling for audio playback failures
+- Improved process termination with graceful fallbacks
+
+💫 QUALITY IMPROVEMENTS
+- Changed command prefix from ! to $ as requested
+- Fixed duplicate asyncio import in code
+- Fixed missing duration_seconds attribute (broke $nowbar command)
+- Improved cog_unload method with proper async handling
+- Enhanced error handling throughout the codebase
+- Optimized imports and removed redundancies
+
+📚 UPDATED DOCUMENTATION
+- Completely rewritten README.md with comprehensive feature guide
+- Updated requirements.txt to include google-generativeai
+- Added detailed audio effects guide with use cases
+- Added AI features documentation with examples
+- Enhanced troubleshooting section
+- Added party mode ideas and configuration guide
+
+🎮 ENHANCED USER EXPERIENCE
+- Updated $usage command to include AI features
+- Added AI commands to $help menu
+- Enhanced $effects command with party tips
+- Improved error messages and user feedback
+- Better organization of command categories
+
+🔒 PRODUCTION READY
+- Comprehensive error handling and recovery
+- Rate limiting and abuse prevention
+- Memory leak prevention
+- Thread-safe operations
+- Graceful shutdown handling
+- Extensive testing and validation
+
+v2.3 (Previous Version)
+
+Summary
+- Feature expansion update with new interactive music commands, playlist persistence, and richer playback controls.
+
+New Features
+- Added a custom embedded `!help` command menu grouped by Music, Playback Controls, Playlists, and Utility commands.
+- Added !lyrics for lyric lookup (artist - title format).
+- Added !nightcore on|off for a nightcore playback effect on upcoming tracks.
+- Added !replay to restart the current track quickly.
+- Added !history to show recently played tracks.
+- Added !playlist save/load/list with per-server JSON persistence.
+- Added !votemode on|off (alias: !vote) for vote-based skipping.
+- Added !mood happy|chill|rage|focus to queue mood-based presets.
+- Added !roastdj to roast current DJ or a tagged member.
+- Added !stats for uptime and playback metrics.
+- Added !nowbar for a live progress bar display.
+- Expanded command docstrings so !help clearly explains usage and aliases.
+
+Fixes
+- Fixed environment load order so .env values are applied before MUSIC_CHANNEL_ID parsing.
+- Fixed playback source handling to preserve track metadata while still refreshing stream sources.
+- Fixed occasional volume command edge cases when voice source is missing.
+- Fixed patchnotes loading path so !patchnotes works even if bot is launched from a different directory.
+- Added explicit startup error when DISCORD_TOKEN is missing.
+
+Behavior and Reliability Improvements
+- Improved audio player loop safety checks and vote reset behavior per track.
+- Simplified on_message branching to reduce duplicated checks and unnecessary random emoji work.
+- Added stronger type guards/casts to reduce false-positive analyzer warnings in editor.
+- Added playback history tracking and per-track start time tracking for richer command output.
+- Added playlist read/write helpers and safer JSON fallback behavior.
+
+Notes
+- !play_spotify remains a placeholder command and is not direct Spotify playback.
+- If imports show unresolved in editor, install dependencies in the active venv:
+	discord.py, yt-dlp, python-dotenv
+
+Bugs
+- None known at release time. Report new issues in Discord with command used and error output.
