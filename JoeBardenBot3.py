@@ -90,9 +90,7 @@ BOT_START_TIME = time.monotonic()
 # We use a hardcoded list and validate the primary model asynchronously in on_ready.
 _PREFERRED_MODELS = [
     "gemini-2.5-flash",
-    "gemini-1.5-flash",
-    "gemini-1.5-pro",
-    "gemini-2.0-flash",
+    "gemini-2.5-flash-lite",
 ]
 
 # Initialize Gemini AI — model selection deferred to on_ready to avoid
@@ -114,8 +112,12 @@ async def _validate_gemini_model() -> None:
     """Probe models in order and update gemini_model to the first responsive one.
 
     Runs once during on_ready via asyncio.to_thread so it never blocks the event loop.
+    503 (transient overload) gets one retry after a short delay before moving on.
+    404/gone models are skipped immediately.
     If all probes fail, gemini_model stays as the first preferred model and
     generate_content_with_fallback handles per-request retries at runtime.
+    available_models is never pruned here — a 503 at startup does not mean the
+    model is permanently gone, only temporarily busy.
     """
     global gemini_model
     if not client:
@@ -123,25 +125,37 @@ async def _validate_gemini_model() -> None:
     print("🔍 Validating Gemini model availability...")
     test_prompt = "Hi"
     for model_name in _PREFERRED_MODELS:
-        try:
-            response = await asyncio.to_thread(
-                client.models.generate_content,
-                model=model_name,
-                contents=test_prompt,
-            )
-            if response and hasattr(response, "text"):
-                print(f"✅ Gemini model validated: {model_name}")
-                gemini_model = model_name
-                return
-        except Exception as e:
-            error_msg = str(e).lower()
-            if any(k in error_msg for k in ["404", "not found", "no longer available", "quota", "429", "503", "unavailable"]):
-                print(f"⚠️  Model '{model_name}' unavailable during startup probe: {e}")
-                log_error(f"[Gemini] Model '{model_name}' unavailable during startup probe", e)
-                continue
-            print(f"⚠️  Model '{model_name}' probe failed: {e}")
-            log_error(f"[Gemini] Model '{model_name}' probe failed", e)
-            continue
+        for attempt in range(2):  # attempt 0 = first try, attempt 1 = retry on 503
+            try:
+                response = await asyncio.to_thread(
+                    client.models.generate_content,
+                    model=model_name,
+                    contents=test_prompt,
+                )
+                if response and hasattr(response, "text"):
+                    print(f"✅ Gemini model validated: {model_name}")
+                    gemini_model = model_name
+                    return
+                break  # non-exception but no text — skip model
+            except Exception as e:
+                error_msg = str(e).lower()
+                is_transient = any(k in error_msg for k in ["503", "unavailable", "overloaded"])
+                is_permanent = any(k in error_msg for k in ["404", "not found", "no longer available"])
+                is_quota = any(k in error_msg for k in ["429", "quota", "resource_exhausted"])
+
+                if is_permanent or is_quota:
+                    print(f"⚠️  Model '{model_name}' skipped during startup probe: {e}")
+                    log_error(f"[Gemini] Model '{model_name}' skipped during startup probe", e)
+                    break  # no point retrying a 404 or quota block
+
+                if is_transient and attempt == 0:
+                    print(f"⚠️  Model '{model_name}' transient 503 on startup — retrying in 3s...")
+                    await asyncio.sleep(3)
+                    continue  # retry same model once
+
+                print(f"⚠️  Model '{model_name}' probe failed: {e}")
+                log_error(f"[Gemini] Model '{model_name}' probe failed", e)
+                break
     print(f"🔄 All startup probes failed — keeping default: {gemini_model}")
 
 
