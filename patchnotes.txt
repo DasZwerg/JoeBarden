@@ -1,3 +1,12 @@
+v3.3.0
+
+Summary: Added $playlist view command and auto-disconnect when alone in voice.
+
+🎵 NEW FEATURES
+- $playlist view: shows all saved playlists with owner names and track counts.
+- Auto-disconnect: bot leaves voice channel after 60 seconds when alone.
+- Auto-disconnect cancels if someone rejoins before the timer completes.
+
 v3.2.7
 
 Summary: README rewritten with accurate commands, env vars, and AI details.
