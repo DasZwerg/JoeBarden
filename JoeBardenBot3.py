@@ -1051,6 +1051,7 @@ class Music(commands.Cog):
         self.bot = bot
         self.voice_states = {}
         self.playlists_path = os.path.join(os.path.dirname(__file__), "playlists.json")
+        self.disconnect_tasks: dict[int, asyncio.Task] = {}
 
     def _read_playlists(self) -> dict[str, dict[str, list[str]]]:
         if not os.path.exists(self.playlists_path):
@@ -1097,6 +1098,10 @@ class Music(commands.Cog):
             except Exception:
                 pass
         self.voice_states.clear()
+        for task in self.disconnect_tasks.values():
+            if not task.done():
+                task.cancel()
+        self.disconnect_tasks.clear()
 
     def cog_check(self, ctx: commands.Context):
         if not ctx.guild:
@@ -1182,7 +1187,8 @@ class Music(commands.Cog):
                 value=(
                     f"`$playlist save <name>` Save queue\n"
                     f"`$playlist load <name>` Load saved playlist\n"
-                    f"`$playlist list` List saved playlists\n"
+                    f"`$playlist list` List your playlists\n"
+                    f"`$playlist view` View all saved playlists\n"
                     f"`$mood <happy|chill|rage|focus>` Queue mood set\n"
                     f"`$lyrics <artist - title>` Fetch lyrics"
                 ),
@@ -1261,6 +1267,12 @@ class Music(commands.Cog):
         """
         if not ctx.voice_state.voice:
             return await ctx.send('Not connected to any voice channel.')
+
+        # Cancel any pending auto-disconnect timer
+        if ctx.guild.id in self.disconnect_tasks:
+            task = self.disconnect_tasks.pop(ctx.guild.id, None)
+            if task and not task.done():
+                task.cancel()
 
         await ctx.voice_state.stop()
         del self.voice_states[ctx.guild.id]
@@ -2008,6 +2020,7 @@ class Music(commands.Cog):
         Usage: $playlist save <name>
         Usage: $playlist load <name>
         Usage: $playlist list
+        Usage: $playlist view
         Usage: $playlist delete <name>
         """
         action = action.lower().strip()
@@ -2020,6 +2033,28 @@ class Music(commands.Cog):
                 return await ctx.send("You have no saved playlists.")
             names = ", ".join(f"`{n}`" for n in user_playlists)
             return await ctx.send(f"Your playlists: {names}")
+
+        if action == "view":
+            if not data:
+                return await ctx.send("No playlists have been saved yet.")
+            lines = []
+            for user_id, user_playlists in data.items():
+                if not user_playlists:
+                    continue
+                owner = ctx.guild.get_member(int(user_id))
+                owner_name = owner.mention if owner else f"<@{user_id}>"
+                for pname, tracks in user_playlists.items():
+                    lines.append(f"• **{pname}** by {owner_name} ({len(tracks)} tracks)")
+            if not lines:
+                return await ctx.send("No playlists have been saved yet.")
+            embed = discord.Embed(
+                title="🎵 Saved Playlists",
+                description="\n".join(lines[:25]),
+                color=discord.Color.blurple()
+            )
+            if len(lines) > 25:
+                embed.set_footer(text=f"...and {len(lines) - 25} more playlists")
+            return await ctx.send(embed=embed)
 
         if not name:
             return await ctx.send(f"Usage: $playlist {action} <name>")
@@ -2562,6 +2597,57 @@ async def on_message(message):
     else:
         return
         
+async def _disconnect_after_delay(guild_id: int, delay: int = 60) -> None:
+    """Wait for delay seconds, then disconnect the bot from the voice channel."""
+    await asyncio.sleep(delay)
+    cog = bot.get_cog("Music")
+    if cog and guild_id in cog.voice_states:
+        voice_state = cog.voice_states[guild_id]
+        if voice_state.voice and voice_state.voice.channel:
+            # Double-check we're still alone
+            channel = voice_state.voice.channel
+            non_bot_members = [m for m in channel.members if not m.bot]
+            if not non_bot_members:
+                print(f"[Auto-Disconnect] Disconnecting from guild {guild_id} after {delay}s alone")
+                await voice_state.stop()
+                cog.voice_states.pop(guild_id, None)
+        # Clean up the task reference
+        cog.disconnect_tasks.pop(guild_id, None)
+
+
+@bot.event
+async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+    """Handle voice state changes to auto-disconnect when alone."""
+    cog = bot.get_cog("Music")
+    if not cog:
+        return
+
+    # Check if the bot is in any voice channel in this guild
+    voice_state = cog.voice_states.get(member.guild.id)
+    if not voice_state or not voice_state.voice:
+        return
+
+    bot_channel = voice_state.voice.channel
+    if not bot_channel:
+        return
+
+    # Check if anyone (non-bot) is left in the channel with the bot
+    non_bot_members = [m for m in bot_channel.members if not m.bot]
+
+    if not non_bot_members:
+        # Bot is alone - start disconnect timer if not already running
+        if member.guild.id not in cog.disconnect_tasks or cog.disconnect_tasks[member.guild.id].done():
+            print(f"[Auto-Disconnect] Starting {60}s timer for guild {member.guild.id}")
+            cog.disconnect_tasks[member.guild.id] = asyncio.create_task(_disconnect_after_delay(member.guild.id))
+    else:
+        # Someone is with the bot - cancel any pending disconnect
+        if member.guild.id in cog.disconnect_tasks:
+            task = cog.disconnect_tasks.pop(member.guild.id, None)
+            if task and not task.done():
+                task.cancel()
+                print(f"[Auto-Disconnect] Cancelled timer for guild {member.guild.id} — someone rejoined")
+
+
 @bot.event
 async def on_ready():
     print('Logged in as:\n{0.user.name}\n{0.user.id}'.format(bot))
