@@ -952,25 +952,29 @@ class VoiceState:
                 # Re-create FFmpeg source at play time to reduce stale/expired stream issues.
                 ffmpeg_options = dict(YTDLSource.FFMPEG_OPTIONS)
                 
-                # Apply audio effects
+                # Build a composable FFmpeg filter chain from all active effects.
+                # areverse is placed first as it must precede time-domain filters.
+                _filters: list[str] = []
+                if self.reverse:
+                    _filters.append("areverse")
                 if self.nightcore:
-                    ffmpeg_options["options"] = "-vn -b:a 192k -af asetrate=48000*1.15,aresample=48000"
-                elif self.slowmo:
-                    ffmpeg_options["options"] = "-vn -b:a 192k -af atempo=0.85"
-                elif self.vaporwave:
-                    ffmpeg_options["options"] = "-vn -b:a 192k -af asetrate=48000*0.8,aresample=48000,aecho=0.8:0.9:1000|1800:0.9|0.9"
-                elif self.reverse:
-                    ffmpeg_options["options"] = "-vn -b:a 192k -af areverse"
-                elif self.bass:
-                    ffmpeg_options["options"] = "-vn -b:a 192k -af bass=g=15"
-                elif self.lofi:
-                    ffmpeg_options["options"] = "-vn -b:a 192k -af acrusher=level_in=1:level_out=1:bits=8:mode=log"
-                elif self.echo:
-                    ffmpeg_options["options"] = "-vn -b:a 192k -af aecho=0.8:0.5:1000|2000|3000:0.5|0.3|0.2"
-                elif self.tremolo:
-                    ffmpeg_options["options"] = "-vn -b:a 192k -af apulsator=mode=sine:hz=2"
-                elif self.fadein:
-                    ffmpeg_options["options"] = "-vn -b:a 192k -af afade=t=in:st=0:d=3"
+                    _filters.append("asetrate=48000*1.15,aresample=48000")
+                if self.slowmo:
+                    _filters.append("atempo=0.85")
+                if self.vaporwave:
+                    _filters.append("asetrate=48000*0.8,aresample=48000,aecho=0.8:0.9:1000|1800:0.9|0.9")
+                if self.bass:
+                    _filters.append("bass=g=15")
+                if self.lofi:
+                    _filters.append("acrusher=level_in=1:level_out=1:bits=8:mode=log")
+                if self.echo:
+                    _filters.append("aecho=0.8:0.5:1000|2000|3000:0.5|0.3|0.2")
+                if self.tremolo:
+                    _filters.append("apulsator=mode=sine:hz=2")
+                if self.fadein:
+                    _filters.append("afade=t=in:st=0:d=3")
+                if _filters:
+                    ffmpeg_options["options"] = "-vn -b:a 192k -af " + ",".join(_filters)
 
                 if not self.voice:
                     await self._send_player_error(channel, "Voice connection dropped before playback started.")
@@ -1617,7 +1621,6 @@ class Music(commands.Cog):
         if mode_normalized not in {"on", "off"}:
             return await ctx.send("Usage: $nightcore on|off")
         
-        ctx.voice_state._clear_effects()
         ctx.voice_state.nightcore = mode_normalized == "on"
         state = "enabled" if ctx.voice_state.nightcore else "disabled"
         await ctx.send(f"🎵 Nightcore is now {state}!")
@@ -1633,7 +1636,6 @@ class Music(commands.Cog):
         if mode_normalized not in {"on", "off"}:
             return await ctx.send("Usage: $slowmo on|off")
         
-        ctx.voice_state._clear_effects()
         ctx.voice_state.slowmo = mode_normalized == "on"
         state = "enabled" if ctx.voice_state.slowmo else "disabled"
         await ctx.send(f"🐌 Slow-mo is now {state}!")
@@ -1649,7 +1651,6 @@ class Music(commands.Cog):
         if mode_normalized not in {"on", "off"}:
             return await ctx.send("Usage: $vaporwave on|off")
         
-        ctx.voice_state._clear_effects()
         ctx.voice_state.vaporwave = mode_normalized == "on"
         state = "enabled" if ctx.voice_state.vaporwave else "disabled"
         await ctx.send(f"🌊 Vaporwave is now {state}!")
@@ -1665,7 +1666,6 @@ class Music(commands.Cog):
         if mode_normalized not in {"on", "off"}:
             return await ctx.send("Usage: $reverse on|off")
         
-        ctx.voice_state._clear_effects()
         ctx.voice_state.reverse = mode_normalized == "on"
         state = "enabled" if ctx.voice_state.reverse else "disabled"
         await ctx.send(f"⏪ Reverse is now {state}!")
@@ -1681,7 +1681,6 @@ class Music(commands.Cog):
         if mode_normalized not in {"on", "off"}:
             return await ctx.send("Usage: $bass on|off")
         
-        ctx.voice_state._clear_effects()
         ctx.voice_state.bass = mode_normalized == "on"
         state = "enabled" if ctx.voice_state.bass else "disabled"
         await ctx.send(f"🔊 Bass boost is now {state}!")
@@ -1697,7 +1696,6 @@ class Music(commands.Cog):
         if mode_normalized not in {"on", "off"}:
             return await ctx.send("Usage: $lofi on|off")
         
-        ctx.voice_state._clear_effects()
         ctx.voice_state.lofi = mode_normalized == "on"
         state = "enabled" if ctx.voice_state.lofi else "disabled"
         await ctx.send(f"📻 Lo-fi is now {state}!")
@@ -1713,7 +1711,6 @@ class Music(commands.Cog):
         if mode_normalized not in {"on", "off"}:
             return await ctx.send("Usage: $echo on|off")
         
-        ctx.voice_state._clear_effects()
         ctx.voice_state.echo = mode_normalized == "on"
         state = "enabled" if ctx.voice_state.echo else "disabled"
         await ctx.send(f"🔊 Echo is now {state}!")
@@ -1729,7 +1726,6 @@ class Music(commands.Cog):
         if mode_normalized not in {"on", "off"}:
             return await ctx.send("Usage: $tremolo on|off")
         
-        ctx.voice_state._clear_effects()
         ctx.voice_state.tremolo = mode_normalized == "on"
         state = "enabled" if ctx.voice_state.tremolo else "disabled"
         await ctx.send(f"🌊 Tremolo is now {state}!")
@@ -1745,7 +1741,6 @@ class Music(commands.Cog):
         if mode_normalized not in {"on", "off"}:
             return await ctx.send("Usage: $fadein on|off")
         
-        ctx.voice_state._clear_effects()
         ctx.voice_state.fadein = mode_normalized == "on"
         state = "enabled" if ctx.voice_state.fadein else "disabled"
         await ctx.send(f"🎵 Fade-in is now {state}!")
@@ -1924,7 +1919,7 @@ class Music(commands.Cog):
             for name, active, desc in effects
         )
         embed = discord.Embed(title="🎛️ Audio Effects", description=lines, color=discord.Color.purple())
-        embed.set_footer(text="Use $<effect> on|off to toggle. Only one effect is active at a time.")
+        embed.set_footer(text="Use $<effect> on|off to toggle. Multiple effects can be active at once.")
         await ctx.send(embed=embed)
 
     @commands.command(name='ask')
