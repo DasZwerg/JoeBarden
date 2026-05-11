@@ -113,12 +113,70 @@ ffmpeg -version
 
 **yt-dlp Cookies (optional — age-restricted content):**
 
-Some YouTube content requires authentication cookies to play. To set this up:
-1. Install a browser extension that exports cookies in Netscape format (e.g. "Get cookies.txt LOCALLY" for Chrome)
-2. Export cookies from YouTube while logged in
-3. Save the file as `cookies.txt` in the project root, or set `YTDL_COOKIES_PATH` to point to it
+Some YouTube content (age-restricted videos, regional content) requires authenticated cookies. The recommended approach uses yt-dlp directly rather than a browser extension:
 
-### 6. Configure environment variables
+```bash
+# Extract cookies from your logged-in browser (Chrome example)
+yt-dlp --cookies-from-browser chrome --cookies cookies.txt "https://www.youtube.com"
+```
+
+This exports all browser cookies for all sites to `cookies.txt` — keep this file private. Other supported browsers: `firefox`, `edge`, `safari`, `brave`, `chromium`.
+
+Alternatively, use the [Get cookies.txt LOCALLY](https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc) extension for Chrome, or [cookies.txt](https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/) for Firefox. The file must be in Netscape/Mozilla format — the first line should read `# Netscape HTTP Cookie File`.
+
+Save the file as `cookies.txt` in the project root, or point `YTDL_COOKIES_PATH` at it.
+
+### 6. Configure the bgutil POT provider (recommended)
+
+`bgutil-ytdlp-pot-provider` generates proof-of-origin tokens (POT) that make yt-dlp's YouTube requests appear more legitimate to Google's bot detection. Without it, requests from server IPs are more likely to hit 403 errors or the "Sign in to confirm you're not a bot" block.
+
+The plugin Python package is already listed in `requirements.txt` and installed via `pip install -r requirements.txt`. You still need to set up the token generation backend separately.
+
+**Requirements:** Node.js ≥ 20 or Deno ≥ 2.0.0, plus `git`.
+
+**Option A — HTTP server (recommended):**
+
+```bash
+# Clone the provider repo (replace 1.3.1 with the latest release tag)
+git clone --single-branch --branch 1.3.1 \
+  https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git
+cd bgutil-ytdlp-pot-provider/server
+
+# With Node.js:
+npm ci
+npx tsc
+node build/main.js
+
+# Or with Deno:
+deno install --allow-scripts=npm:canvas --frozen
+cd node_modules && deno run \
+  --allow-env --allow-net --allow-ffi=. --allow-read=. ../src/main.ts
+```
+
+The server runs on `http://127.0.0.1:4416` by default. Once it's running, yt-dlp will automatically detect and use it — no additional configuration needed in the bot.
+
+To run on a different port:
+```bash
+node build/main.js --port 8080
+# Then pass to yt-dlp manually:
+# --extractor-args "youtubepot-bgutilhttp:base_url=http://127.0.0.1:8080"
+```
+
+**Option B — Docker (simplest):**
+
+```bash
+docker run --name bgutil-provider -d --init brainicism/bgutil-ytdlp-pot-provider
+```
+
+Exposes port 4416. No Node.js/Deno required.
+
+**Option C — Script mode (no server required):**
+
+After cloning the repo as above, the plugin will invoke the script directly per yt-dlp call. This is slower and not suitable for high concurrency, but requires no running server. Just ensure `node` or `deno` is in PATH.
+
+See the [full bgutil README](https://github.com/Brainicism/bgutil-ytdlp-pot-provider) for advanced configuration.
+
+### 7. Configure environment variables
 
 Create a `.env` file in the project root:
 
@@ -138,7 +196,7 @@ YTDL_COOKIES_PATH=/path/to/cookies.txt  # optional
 | `MUSIC_CHANNEL_ID` | ⚪ Optional | Restricts music commands to one channel |
 | `YTDL_COOKIES_PATH` | ⚪ Optional | Path to cookies.txt for age-restricted content |
 
-### 7. Bot permissions
+### 8. Bot permissions
 
 These Discord permissions are required when inviting the bot:
 
@@ -151,7 +209,7 @@ These Discord permissions are required when inviting the bot:
 | Embed Links | Show now-playing embeds |
 | Add Reactions | React to commands (skip votes, etc.) |
 
-### 8. Dependencies
+### 9. Dependencies
 
 | Package | What it does |
 |---|---|
@@ -164,7 +222,7 @@ These Discord permissions are required when inviting the bot:
 | `openai` | OpenAI-compatible client used for Groq API fallback |
 | `davey` | DAVE protocol library for Discord E2EE audio/video |
 
-### 9. Run the bot
+### 10. Run the bot
 
 ```bash
 python JoeBardenBot3.py
@@ -173,6 +231,41 @@ python JoeBardenBot3.py
 ---
 
 ## How it works
+
+### Bot pipeline
+
+The full request lifecycle from Discord message to audio output:
+
+```
+Discord user → $play <input>
+  │
+  ├─ Input classification
+  │    ├─ Spotify URL → oEmbed API → artist/title string → YouTube search
+  │    ├─ Apple Music URL → iTunes Lookup API → artist/title string → YouTube search
+  │    ├─ YouTube playlist URL → yt-dlp flat extraction → list of video URLs
+  │    ├─ YouTube URL → passed directly to yt-dlp
+  │    └─ Plain text → treated as YouTube search query (ytsearch:)
+  │
+  ├─ yt-dlp metadata extraction (async, run in thread executor)
+  │    ├─ Proof-of-origin token injected by bgutil-ytdlp-pot-provider plugin
+  │    ├─ Browser-spoofed User-Agent headers to reduce bot fingerprinting
+  │    ├─ Randomized request delay (1–3s) between calls
+  │    └─ cookiefile injected if YTDL_COOKIES_PATH is set
+  │
+  ├─ Song object queued into asyncio.Queue (SongQueue)
+  │
+  └─ audio_player_task (background asyncio coroutine, one per guild)
+       ├─ Dequeues next Song, re-resolves a fresh stream URL at play time
+       │    (stream URLs from YouTube expire; re-resolving prevents stale URL errors)
+       ├─ Builds FFmpeg filter chain from all active effect flags
+       │    └─ e.g. reverse → nightcore → bass → echo → joined as -af filter string
+       ├─ discord.FFmpegPCMAudio streams audio over UDP via Discord voice gateway
+       │    ├─ FFmpeg reconnects on drop (-reconnect 1 -reconnect_streamed 1)
+       │    └─ PCMVolumeTransformer applies per-guild volume in real time
+       └─ After track ends → next.set() → loop iterates to next queued Song
+```
+
+Each guild gets its own `VoiceState` instance with an independent queue, player task, effect flags, and volume. State is isolated — multiple guilds can run concurrently.
 
 ### AI
 
