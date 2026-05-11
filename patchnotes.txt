@@ -1,3 +1,16 @@
+v3.3.1
+
+Summary: Fixed Apple Music links and improved the help command layout.
+
+🔧 BUG FIXES
+- Apple Music: links now resolve correctly via the iTunes catalog API.
+- Previous Apple Music oEmbed endpoints were returning 404 errors.
+
+🎛 IMPROVEMENTS
+- Help command: reorganized sections with clearer labels and emojis.
+- Help command: $remove and $shuffle moved to the Playback section.
+- Help command: $playlist delete is now listed in the help menu.
+
 v3.3.0
 
 Summary: Added $playlist view command and auto-disconnect when alone in voice.
