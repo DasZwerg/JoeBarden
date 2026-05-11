@@ -1,3 +1,15 @@
+v3.3.2
+
+Summary: Fixed audio effects stacking and reorganized the README.
+
+🔧 BUG FIXES
+- Audio effects: multiple effects can now be active at the same time.
+- Audio effects: toggling one effect no longer clears the others.
+
+🎛 IMPROVEMENTS
+- README: reordered into Setup, How it Works, Commands, Troubleshoot.
+- README: added virtual environment setup step to install guide.
+
 v3.3.1
 
 Summary: Fixed Apple Music links and improved the help command layout.
