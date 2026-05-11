@@ -56,6 +56,12 @@ git clone <repository-url>
 cd JoeBarden
 ```
 
+2. **Setup Venv**
+```bash
+python -m venv .venv
+source .venv/bin/activate
+```
+
 2. **Install deps**
 ```bash
 pip install -r requirements.txt
