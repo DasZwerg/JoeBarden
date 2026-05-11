@@ -455,24 +455,44 @@ def resolve_music_link_to_query(value: str) -> tuple[str, Optional[str]]:
         return title, None
 
     if is_apple_music_url(raw):
-        data = None
-        last_error = None
-        for endpoint in ("https://music.apple.com/oembed", "https://music.apple.com/us/oembed"):
-            try:
-                # Apple Music oEmbed endpoints provide enough metadata for a ytsearch query.
-                data = _fetch_oembed_metadata(raw, endpoint) or {}
-                break
-            except Exception as exc:
-                last_error = exc
+        # Apple Music oEmbed is defunct (404). Use iTunes Lookup API instead.
+        # Prefer the track ID (?i=...) for a direct lookup; fall back to album ID.
+        track_id_match = re.search(r'[?&]i=(\d+)', raw)
+        album_id_match = re.search(r'/album/[^/]+/(\d+)', raw)
+        lookup_id = track_id_match.group(1) if track_id_match else (
+            album_id_match.group(1) if album_id_match else None
+        )
+        if not lookup_id:
+            return "", "Apple Music link resolve failed: could not extract a track or album ID from the URL."
 
-        if data is None:
-            return "", f"Apple Music link resolve failed: {last_error}"
+        lookup_url = f"https://itunes.apple.com/lookup?id={lookup_id}&entity=song"
+        req = urllib.request.Request(
+            lookup_url,
+            headers={"Accept": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=URL_RESOLVE_TIMEOUT_SECONDS) as response:
+                payload = json.loads(response.read().decode("utf-8", errors="replace"))
+        except Exception as exc:
+            return "", f"Apple Music link resolve failed: {exc}"
 
-        title = (data.get("title") or "").strip()
-        author = (data.get("author_name") or "").strip()
-        if not title and not author:
+        results = payload.get("results") or []
+        # For a track lookup the first result is the track itself.
+        # For an album lookup the first result is the collection; find the first song.
+        record = None
+        if track_id_match:
+            record = results[0] if results else None
+        else:
+            record = next((r for r in results if r.get("wrapperType") == "track"), None)
+
+        if not record:
             return "", "Apple Music link resolve failed: no usable metadata returned."
-        query = f"{author} - {title}".strip(" -")
+
+        track_name = (record.get("trackName") or "").strip()
+        artist_name = (record.get("artistName") or "").strip()
+        if not track_name and not artist_name:
+            return "", "Apple Music link resolve failed: no usable metadata returned."
+        query = f"{artist_name} - {track_name}".strip(" -")
         return query, None
 
     return raw, None
@@ -1131,95 +1151,100 @@ class Music(commands.Cog):
 
         Usage: $help
         """
-        prefix = "$"
         embed = (
             discord.Embed(
-                title="Joe Barden Bot Command Center",
-                description="Use the commands below in the configured music channel.",
+                title="🎸 Joe Barden Bot",
+                description=(
+                    "Joe Barden is your Discord music bard — queue tracks, "
+                    "manage playlists, apply audio effects, and summon the AI bard.\n"
+                    "All music commands work in the designated music channel only."
+                ),
                 color=discord.Color.blurple(),
             )
             .add_field(
-                name="Music",
+                name="🎵 Queueing Music",
                 value=(
-                    f"`$play <query|url>` Queue a track or playlist\n"
-                    f"`$join` Join your voice channel\n"
-                    f"`$summon [#channel]` Move bot to a voice channel\n"
-                    f"`$leave` Disconnect and clear queue\n"
-                    f"`$queue [page]` Show queue pages\n"
-                    f"`$now` Show current song\n"
-                    f"`$nowbar` Show progress bar\n"
-                    f"`$history` Show recently played"
+                    "`$play <song, URL, or playlist>` — queue a track or playlist\n"
+                    "`$join` — join your current voice channel\n"
+                    "`$summon [#channel]` — move bot to a specific voice channel\n"
+                    "`$leave` — disconnect and clear the queue\n"
+                    "`$queue [page]` — browse the current queue (10 per page)\n"
+                    "`$now` — show what's currently playing\n"
+                    "`$nowbar` — live progress bar for the current track\n"
+                    "`$history` — recently played tracks"
                 ),
                 inline=False,
             )
             .add_field(
-                name="Playback Controls",
+                name="⏯️ Playback Controls",
                 value=(
-                    f"`$pause` Pause\n"
-                    f"`$resume` Resume\n"
-                    f"`$stop` Stop and clear\n"
-                    f"`$clear` Clear queue (keep playing)\n"
-                    f"`$skip` Skip current track\n"
-                    f"`$replay` Replay current track\n"
-                    f"`$loop on|off` Loop current track\n"
-                    f"`$volume <0-100>` Set volume"
+                    "`$pause` — pause playback\n"
+                    "`$resume` — resume paused playback\n"
+                    "`$skip` — vote to skip (or skip immediately if alone)\n"
+                    "`$replay` — restart the current track from the beginning\n"
+                    "`$loop on|off` — loop the current track\n"
+                    "`$volume <0–100>` — set playback volume\n"
+                    "`$stop` — stop playback and clear the queue\n"
+                    "`$clear` — clear the queue without stopping the current track\n"
+                    "`$shuffle` — randomly shuffle the queued tracks\n"
+                    "`$remove <number>` — remove a specific track from the queue"
                 ),
                 inline=False,
             )
             .add_field(
                 name="🎛️ Audio Effects",
                 value=(
-                    f"`$effects` Show all effects\n"
-                    f"`$nightcore on|off` Speed up music\n"
-                    f"`$slowmo on|off` Slow down music\n"
-                    f"`$vaporwave on|off` Aesthetic effect\n"
-                    f"`$reverse on|off` Play backwards\n"
-                    f"`$bass on|off` Heavy bass boost\n"
-                    f"`$lofi on|off` Crunchy vintage sound\n"
-                    f"`$echo on|off` Triple echo chamber\n"
-                    f"`$tremolo on|off` Pulsing effect\n"
-                    f"`$fadein on|off` Smooth fade-in"
+                    "`$effects` — show all available effects and their status\n"
+                    "`$nightcore on|off` — speed up and pitch shift\n"
+                    "`$slowmo on|off` — slow things down\n"
+                    "`$vaporwave on|off` — slowed + reverb aesthetic\n"
+                    "`$bass on|off` — heavy bass boost\n"
+                    "`$lofi on|off` — crunchy lo-fi sound\n"
+                    "`$echo on|off` — layered echo effect\n"
+                    "`$tremolo on|off` — pulsing volume effect\n"
+                    "`$fadein on|off` — smooth fade-in at track start\n"
+                    "`$reverse on|off` — play audio backwards"
                 ),
                 inline=False,
             )
             .add_field(
-                name="Playlists and Discovery",
+                name="💾 Playlists & Discovery",
                 value=(
-                    f"`$playlist save <name>` Save queue\n"
-                    f"`$playlist load <name>` Load saved playlist\n"
-                    f"`$playlist list` List your playlists\n"
-                    f"`$playlist view` View all saved playlists\n"
-                    f"`$mood <happy|chill|rage|focus>` Queue mood set\n"
-                    f"`$lyrics <artist - title>` Fetch lyrics"
+                    "`$playlist save <name>` — save the current queue as a playlist\n"
+                    "`$playlist load <name>` — load a saved playlist into the queue\n"
+                    "`$playlist list` — list your own saved playlists\n"
+                    "`$playlist view` — view all playlists saved by anyone\n"
+                    "`$playlist delete <name>` — delete one of your playlists\n"
+                    "`$mood <happy|chill|rage|focus>` — queue a mood-based preset\n"
+                    "`$lyrics <artist - title>` — fetch lyrics for a song"
                 ),
                 inline=False,
             )
             .add_field(
-                name="🤖 AI Assistant",
+                name="🤖 AI Bard",
                 value=(
-                    f"`$bard <request>` Ask the Bard — AI queues songs for you\n"
-                    f"`$ask <question>` Ask AI anything\n"
-                    f"`$roastdj [@user]` AI-powered roast of the DJ\n"
-                    f"`$aistats` Check AI usage limits\n\n"
-                    f"⚠️ **Please use AI responsibly** — I pay for each request!\n"
-                    f"🎶 AI commands are unavailable while music is playing or queued."
+                    "`$bard <request>` — ask Joe to recommend and queue songs for you\n"
+                    "`$ask <question>` — ask the bard anything\n"
+                    "`$roastdj [@user]` — have Joe roast whoever's running the aux\n"
+                    "`$aistats` — check daily AI usage\n"
+                    "\n"
+                    "⚠️ Please use AI commands responsibly — each request has a cost.\n"
+                    "🎶 AI is unavailable while music is playing or queued."
                 ),
                 inline=False,
             )
             .add_field(
-                name="Community and Utility",
+                name="🛠️ Utility",
                 value=(
-                    f"`$usage` Simple how-to guide\n"
-                    f"`$votemode on|off` Toggle vote skip mode\n"
-                    f"`$stats` Show bot stats\n"
-                    f"`$shuffle` Shuffle queue\n"
-                    f"`$remove <index>` Remove queued track\n"
-                    f"`$patchnotes` View latest changelog\n"
-                    f"`$patchnotes_long` Download full version history"
+                    "`$usage` — quick how-to guide for new users\n"
+                    "`$votemode on|off` — require a vote before skipping\n"
+                    "`$stats` — bot uptime and playback stats\n"
+                    "`$patchnotes` — latest changelog\n"
+                    "`$patchnotes_long` — full version history"
                 ),
                 inline=False,
             )
-            .set_footer(text="Joe Barden Bot — use $help for commands.")
+            .set_footer(text="Joe Barden Bot — type $help for this menu at any time.")
         )
 
         await ctx.send(embed=embed)
