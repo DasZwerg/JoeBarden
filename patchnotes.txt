@@ -1,3 +1,11 @@
+v3.3.3
+
+Summary: Fixed Apple Music links being incorrectly detected as playlists.
+
+🔧 BUG FIXES
+- Apple Music: album URLs now resolve as single tracks instead of playlists.
+- The is_playlist_url check now excludes Apple Music and Spotify URLs.
+
 v3.3.2
 
 Summary: Fixed audio effects stacking and reorganized the README.
