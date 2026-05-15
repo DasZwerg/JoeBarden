@@ -407,12 +407,20 @@ def _split_patchnote_blocks(content: str) -> list[str]:
 
 
 def is_playlist_url(value: str) -> bool:
-    """Return True if the URL looks like a YouTube/SoundCloud/etc. playlist."""
+    """Return True if the URL looks like a YouTube/SoundCloud/etc. playlist.
+
+    Excludes Apple Music and Spotify URLs — those are handled by
+    resolve_music_link_to_query as single-track lookups.
+    """
+    if not value.startswith("http"):
+        return False
+    if is_apple_music_url(value) or is_spotify_url(value):
+        return False
     return bool(re.search(
         r"(list=|/sets/|/playlist/|/album/|[?&]list=)",
         value,
         re.IGNORECASE,
-    )) and value.startswith("http")
+    ))
 
 
 def is_spotify_url(value: str) -> bool:
