@@ -65,6 +65,20 @@ python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 ```
 
+### 2a. Tmux recommended for hosting POTS server + Barden on the same device. It's a huge pain in the ass otherwise.
+
+**macOS:**
+```bash
+brew install tmux
+```
+
+**Linux:**
+```bash
+sudo apt install tmux
+```
+To actually use tmux, type "tmux" after installation, it will open a virtual window so you can run one of the py scripts. Then press ctrl+b then d to exit the session without closing it. You can then type "tmux" again to start a second session, start the other py script, then ctrl+b then d to exit again. To reconnect to one of the sessions, you can find the number of the session with "tmux ls" then "tmux attach-session -t 0/1/2/etc". |
+I'm fairly certain there are alternatives to tmux, it's just my preference. You will need to activate the venv per tmux session, so keep that in mind.
+
 ### 3. Install dependencies
 
 ```bash
@@ -113,22 +127,22 @@ ffmpeg -version
 
 **yt-dlp Cookies (optional — age-restricted content):**
 
-Some YouTube content (age-restricted videos, regional content) requires authenticated cookies. The recommended approach uses yt-dlp directly rather than a browser extension:
+Some YouTube content (age restricted videos, regional content) requires authenticated cookies. The recommended approach uses yt-dlp directly rather than a browser extension:
 
 ```bash
 # Extract cookies from your logged-in browser (Chrome example)
 yt-dlp --cookies-from-browser chrome --cookies cookies.txt "https://www.youtube.com"
 ```
 
-This exports all browser cookies for all sites to `cookies.txt` — keep this file private. Other supported browsers: `firefox`, `edge`, `safari`, `brave`, `chromium`.
+This exports all browser cookies for all sites to `cookies.txt`. Keep this file private. Other supported browsers: `firefox`, `edge`, `safari`, `brave`, `chromium`.
 
-Alternatively, use the [Get cookies.txt LOCALLY](https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc) extension for Chrome, or [cookies.txt](https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/) for Firefox. The file must be in Netscape/Mozilla format — the first line should read `# Netscape HTTP Cookie File`.
+Alternatively, use the [Get cookies.txt LOCALLY](https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc) extension for Chrome, or [cookies.txt](https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/) for Firefox. The file must be in Netscape/Mozilla format. The first line should read `# Netscape HTTP Cookie File`.
 
 Save the file as `cookies.txt` in the project root, or point `YTDL_COOKIES_PATH` at it.
 
 ### 6. Configure the bgutil POT provider (recommended)
 
-`bgutil-ytdlp-pot-provider` generates proof-of-origin tokens (POT) that make yt-dlp's YouTube requests appear more legitimate to Google's bot detection. Without it, requests from server IPs are more likely to hit 403 errors or the "Sign in to confirm you're not a bot" block.
+`bgutil-ytdlp-pot-provider` generates proof of origin tokens (POT) that make yt-dlp's YouTube requests appear more legitimate to Google's bot detection. Without it, requests from server IPs are more likely to hit 403 errors or the "Sign in to confirm you're not a bot" block.
 
 The plugin Python package is already listed in `requirements.txt` and installed via `pip install -r requirements.txt`. You still need to set up the token generation backend separately.
 
@@ -265,11 +279,11 @@ Discord user → $play <input>
        └─ After track ends → next.set() → loop iterates to next queued Song
 ```
 
-Each guild gets its own `VoiceState` instance with an independent queue, player task, effect flags, and volume. State is isolated — multiple guilds can run concurrently.
+Each guild gets its own `VoiceState` instance with an independent queue, player task, effect flags, and volume. State is isolated, multiple guilds can run concurrently.
 
 ### AI
 
-The bot uses **Google Gemini** as its primary AI. If Gemini is down or hits quota, it automatically switches to **Groq** (Llama/Mixtral models). You only need `GEMINI_API_KEY` for AI to work — `GROQ_API_KEY` is optional but improves reliability.
+The bot uses **Google Gemini** as its primary AI, because it has one of the higher daily quotas on the free tier. If Gemini is down or hits quota, it automatically switches to **Groq** (Llama/Mixtral models), not to be mistaken with Grok, which I will never use. You only need `GEMINI_API_KEY` for AI to work — `GROQ_API_KEY` is optional but improves reliability.
 
 AI model priority:
 1. `gemini-2.5-flash` (primary)
@@ -403,7 +417,7 @@ $mood rage
 **Music not playing:**
 - Verify FFmpeg is installed: `ffmpeg -version`
 - Check the URL is valid and public
-- Age-restricted YouTube content needs a `cookies.txt` file (see `YTDL_COOKIES_PATH`)
+- Age restricted YouTube content needs a `cookies.txt` file (see `YTDL_COOKIES_PATH`)
 
 **AI not responding:**
 - Verify `GEMINI_API_KEY` is set correctly in `.env`
@@ -427,25 +441,3 @@ $mood rage
 | `⏰ You've reached your daily AI limit` | AI quota exhausted — wait for daily reset or add Groq fallback |
 | `❌ Use music commands in #channel only` | `MUSIC_CHANNEL_ID` is set — use the designated channel |
 | `⚠️ No cookie file found` | Age-restricted content will fail — add `cookies.txt` or set `YTDL_COOKIES_PATH` |
-
----
-
-## Project structure
-
-```
-JoeBarden/
-├── JoeBardenBot3.py     # Main bot source
-├── .env                 # Environment variables (not committed)
-├── requirements.txt     # Python dependencies
-├── playlists.json       # Saved playlists per server
-├── patchnotes.txt       # Bot changelog
-├── cookies.txt          # yt-dlp cookies (optional, not committed)
-├── errors.txt           # Runtime error log (auto-created, rotates at 100MB)
-└── README.md            # This file
-```
-
----
-
-## License
-
-Copyright LPSC LLC. All rights reserved.
