@@ -441,3 +441,6 @@ $mood rage
 | `⏰ You've reached your daily AI limit` | AI quota exhausted — wait for daily reset or add Groq fallback |
 | `❌ Use music commands in #channel only` | `MUSIC_CHANNEL_ID` is set — use the designated channel |
 | `⚠️ No cookie file found` | Age-restricted content will fail — add `cookies.txt` or set `YTDL_COOKIES_PATH` |
+
+### AI Disclosure
+I have used AI to suppliment code, bugfix, and fix bugs. 
