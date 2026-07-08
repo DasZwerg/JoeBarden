@@ -242,6 +242,24 @@ These Discord permissions are required when inviting the bot:
 python JoeBardenBot3.py
 ```
 
+On startup, after the Gemini / AI integration status, the bot prints the list of servers it is installed on.
+
+#### Debug mode
+
+Run with the `-debug` flag to print every non-bot message the bot detects in each server:
+
+```bash
+python JoeBardenBot3.py -debug
+```
+
+Each line is formatted as:
+
+```
+serverID | channelID | username: message here
+```
+
+This is useful for verifying the bot can see messages and for troubleshooting command detection.
+
 ---
 
 ## How it works

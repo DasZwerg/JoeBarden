@@ -84,6 +84,7 @@ else:
     print(f"[Cookie] WARNING: No cookie file found. Age-restricted content will fail. Set YTDL_COOKIES_PATH in .env or place cookies.txt at: {_cookies_default}")
 URL_RESOLVE_TIMEOUT_SECONDS = 8
 BOT_START_TIME = time.monotonic()
+DEBUG_MODE = "-debug" in sys.argv
 
 # Preferred Gemini models in order of preference (cheapest/most efficient first).
 # NOTE: google-genai SDK 1.0+ removed the usable models.list() API.
@@ -2574,6 +2575,9 @@ async def on_message(message):
     if message.author.bot:
         return
 
+    if DEBUG_MODE and message.guild is not None:
+        print(f"{message.guild.id} | {message.channel.id} | {message.author.name}: {message.content}")
+
     await bot.process_commands(message)
 
     content = message.content.lower()
@@ -2682,6 +2686,9 @@ async def on_ready():
     if bot.get_cog("Music") is None:
         await bot.add_cog(Music(bot))
     asyncio.create_task(_validate_gemini_model())
+    print(f"Connected to {len(bot.guilds)} server(s):")
+    for guild in bot.guilds:
+        print(f"  - {guild.name} (ID: {guild.id})")
 
 if not token:
     raise RuntimeError("DISCORD_TOKEN is not set. Add it to your environment or .env file.")
