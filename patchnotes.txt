@@ -26,7 +26,8 @@ Summary: Improved playback efficiency, queue reliability, playlist safety, comma
 - Cookies: each extraction reloads current cookie state, so replacement no longer requires a bot restart.
 - POT provider: added explicit configurable bgutil HTTP provider integration with the mweb client preferred.
 - Health: added local and bot-owner-only checks for cookie, plugin, and provider status.
-- Monitoring: hourly checks report missing cookies and provider outages to the bot owner.
+- Monitoring: hourly checks validate managed cookies, retry provider failures three times, and report persistent outages to the bot owner.
+- Diagnostics: startup confirms the number of validated YouTube cookie entries and keeps full provider connection failures in errors.txt.
 - Error reporting: operational failures send sanitized, rate-limited owner DMs while details remain in errors.txt.
 - Security: provider URLs cannot contain embedded credentials, browser databases are not read automatically, and Docker binds to loopback only.
 

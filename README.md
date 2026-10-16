@@ -137,7 +137,7 @@ Install the export through the bot's local maintenance command. It validates the
 python JoeBardenBot3.py --install-cookies /path/to/exported-cookies.txt
 ```
 
-The destination defaults to `cookies.txt` in the project root. Set `YTDL_COOKIES_PATH` to use a different destination. Every extraction creates a fresh yt-dlp client, so a replaced cookie file is used immediately without restarting the bot.
+The destination defaults to `cookies.txt` in the project root. Set `YTDL_COOKIES_PATH` to use a different destination. Every extraction creates a fresh yt-dlp client, so a replaced cookie file is used immediately without restarting the bot. On installation and startup, Joe prints `YouTube cookies ready` only after validating the file and reports the number of YouTube entries loaded; it does not claim to have extracted browser cookies.
 
 ### 6. Configure the bgutil POT provider (recommended)
 
@@ -260,7 +260,7 @@ This is useful for verifying the bot can see messages and for troubleshooting co
 
 Joe writes technical details and tracebacks to `errors.txt`. After login, operational errors are also reported by DM to the Discord application owner. DMs contain only the affected component and timestamp; paths, URLs, user input, exception text, and tracebacks remain on the server. Repeated alerts from the same component are suppressed for five minutes.
 
-The hourly yt-dlp health monitor reports missing cookies and an unreachable PO-token provider through the same owner DM path. The application owner can also run the hidden `$ytdlhealth` command for an immediate status check. Make sure the owner allows direct messages from the bot.
+The hourly yt-dlp health monitor validates the managed cookie file and checks the PO-token provider. Provider failures are retried three times before an owner alert is sent, while the full connection error remains in `errors.txt`. The application owner can run the hidden `$ytdlhealth` command for an immediate status check. Make sure the owner allows direct messages from the bot.
 
 Firefox cookie databases are not read automatically. When the dedicated browser session needs replacement, export a Netscape cookie file and use `--install-cookies`; Joe will alert the owner if the managed cookie file is missing.
 

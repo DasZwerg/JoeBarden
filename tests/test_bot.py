@@ -88,8 +88,9 @@ class YtdlRuntimeTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            bot_module.install_youtube_cookies(str(source), str(destination))
+            entries = bot_module.install_youtube_cookies(str(source), str(destination))
 
+            self.assertEqual(entries, 1)
             self.assertEqual(destination.read_text(encoding="utf-8"), source.read_text(encoding="utf-8"))
             self.assertFalse(Path(f"{destination}.tmp").exists())
 

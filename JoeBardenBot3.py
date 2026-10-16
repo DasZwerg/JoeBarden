@@ -101,29 +101,34 @@ YTDL_POT_PROVIDER_URL = os.getenv("YTDL_POT_PROVIDER_URL", "http://127.0.0.1:441
 _pot_url = urllib.parse.urlsplit(YTDL_POT_PROVIDER_URL)
 if _pot_url.scheme not in {"http", "https"} or not _pot_url.hostname or _pot_url.username or _pot_url.password:
     raise RuntimeError("YTDL_POT_PROVIDER_URL must be an HTTP(S) URL without embedded credentials.")
-if os.path.isfile(YTDL_COOKIES_PATH):
-    print(f"[Cookie] Loaded cookie file: {YTDL_COOKIES_PATH}")
-else:
-    print(f"[Cookie] WARNING: No cookie file found. Age-restricted content will fail. Install one at: {YTDL_COOKIES_PATH}")
 URL_RESOLVE_TIMEOUT_SECONDS = 8
 BOT_START_TIME = time.monotonic()
 DEBUG_MODE = "-debug" in sys.argv
 
 
-def install_youtube_cookies(source_path: str, destination_path: str = YTDL_COOKIES_PATH) -> None:
+def validate_youtube_cookies(payload: bytes) -> int:
+    if len(payload) > 10 * 1024 * 1024:
+        raise ValueError("Cookie file exceeds the 10 MB safety limit.")
+    text = payload.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    if not any("Netscape HTTP Cookie File" in line for line in lines[0:2]):
+        raise ValueError("Expected a Netscape cookie file header.")
+    youtube_entries = sum(
+        1
+        for line in lines
+        if "youtube.com" in line.lower() and (not line.startswith("#") or line.startswith("#HttpOnly_"))
+    )
+    if not youtube_entries:
+        raise ValueError("Expected at least one YouTube cookie.")
+    return youtube_entries
+
+
+def install_youtube_cookies(source_path: str, destination_path: str = YTDL_COOKIES_PATH) -> int:
     source = os.path.abspath(os.path.expanduser(source_path))
     destination = os.path.abspath(os.path.expanduser(destination_path))
     with open(source, "rb") as fp:
         payload = fp.read(10 * 1024 * 1024 + 1)
-    if len(payload) > 10 * 1024 * 1024:
-        raise ValueError("Cookie file exceeds the 10 MB safety limit.")
-    text = payload.decode("utf-8", errors="replace")
-    if not any("Netscape HTTP Cookie File" in line for line in text.splitlines()[0:2]) or not any(
-        "youtube.com" in line.lower()
-        for line in text.splitlines()
-        if not line.startswith("#") or line.startswith("#HttpOnly_")
-    ):
-        raise ValueError("Expected a Netscape cookie file containing YouTube cookies.")
+    cookie_entries = validate_youtube_cookies(payload)
     parent = os.path.dirname(destination)
     if not os.path.isdir(parent):
         raise ValueError(f"Cookie destination directory does not exist: {parent}")
@@ -135,13 +140,21 @@ def install_youtube_cookies(source_path: str, destination_path: str = YTDL_COOKI
     if os.name != "nt":
         os.chmod(temporary, 0o600)
     os.replace(temporary, destination)
+    return cookie_entries
 
 
 def get_ytdl_health() -> dict[str, Any]:
     cookie_exists = os.path.isfile(YTDL_COOKIES_PATH)
     cookie_age = None
+    cookie_entries = 0
+    cookie_error = None
     if cookie_exists:
         cookie_age = max(0, int(time.time() - os.path.getmtime(YTDL_COOKIES_PATH)))
+        try:
+            with open(YTDL_COOKIES_PATH, "rb") as fp:
+                cookie_entries = validate_youtube_cookies(fp.read(10 * 1024 * 1024 + 1))
+        except Exception as exc:
+            cookie_error = str(exc)
 
     provider: dict[str, Any] = {"url": YTDL_POT_PROVIDER_URL, "reachable": False}
     try:
@@ -160,10 +173,24 @@ def get_ytdl_health() -> dict[str, Any]:
     return {
         "cookie_file": os.path.basename(YTDL_COOKIES_PATH),
         "cookie_present": cookie_exists,
+        "cookie_valid": cookie_exists and cookie_error is None,
+        "cookie_entries": cookie_entries,
+        "cookie_error": cookie_error,
         "cookie_age_seconds": cookie_age,
         "pot_plugin_version": plugin_version,
         "pot_provider": provider,
     }
+
+
+if os.path.isfile(YTDL_COOKIES_PATH):
+    try:
+        with open(YTDL_COOKIES_PATH, "rb") as fp:
+            _cookie_entries = validate_youtube_cookies(fp.read(10 * 1024 * 1024 + 1))
+        print(f"✅ YouTube cookies ready: validated {_cookie_entries} entries from {YTDL_COOKIES_PATH}")
+    except Exception as _cookie_exc:
+        print(f"⚠️  YouTube cookie file is present but invalid: {_cookie_exc}")
+else:
+    print(f"⚠️  No managed YouTube cookie file found. Install one at: {YTDL_COOKIES_PATH}")
 
 
 # Preferred Gemini models in order of preference (cheapest/most efficient first).
@@ -2381,8 +2408,10 @@ class Music(commands.Cog):
         health = await asyncio.to_thread(get_ytdl_health)
         provider = health["pot_provider"]
         cookie_status = "missing"
-        if health["cookie_present"]:
-            cookie_status = f"present, updated {format_clock(health['cookie_age_seconds'])} ago"
+        if health["cookie_valid"]:
+            cookie_status = f"valid ({health['cookie_entries']} entries), updated {format_clock(health['cookie_age_seconds'])} ago"
+        elif health["cookie_present"]:
+            cookie_status = "present but invalid"
         provider_status = f"reachable, v{provider.get('version', 'unknown')}" if provider["reachable"] else "unreachable"
         plugin_status = health["pot_plugin_version"] or "not installed"
         await ctx.send(
@@ -2779,8 +2808,22 @@ class JoeBardenBot(commands.Bot):
                 health = await asyncio.to_thread(get_ytdl_health)
                 if not health["cookie_present"]:
                     log_error("[CookieHealth] YouTube cookie file is missing")
-                if not health["pot_provider"]["reachable"]:
-                    log_error("[POTHealth] PO-token provider is unreachable")
+                elif not health["cookie_valid"]:
+                    log_error("[CookieHealth] YouTube cookie file is invalid", ValueError(health["cookie_error"]))
+                else:
+                    print(f"✅ [CookieHealth] Managed YouTube cookies are valid ({health['cookie_entries']} entries)")
+
+                for attempt in range(3):
+                    if health["pot_provider"]["reachable"]:
+                        print(f"✅ [POTHealth] Provider ready: v{health['pot_provider'].get('version', 'unknown')}")
+                        break
+                    if attempt < 2:
+                        print(f"⚠️  [POTHealth] Provider unavailable; retrying in 10s ({attempt + 1}/3)")
+                        await asyncio.sleep(10)
+                        health = await asyncio.to_thread(get_ytdl_health)
+                else:
+                    provider_error = health["pot_provider"].get("error", "Unknown provider error")
+                    log_error("[POTHealth] PO-token provider is unreachable", RuntimeError(provider_error))
             except Exception as exc:
                 log_error("[YTDLHealth] Health check failed", exc)
             await asyncio.sleep(3600)
@@ -2924,8 +2967,8 @@ def run_maintenance_cli(argv: list[str]) -> bool:
         index = argv.index("--install-cookies")
         if index + 1 >= len(argv):
             raise RuntimeError("Usage: python JoeBardenBot3.py --install-cookies /path/to/cookies.txt")
-        install_youtube_cookies(argv[index + 1])
-        print(f"[Cookie] Installed validated YouTube cookies at {YTDL_COOKIES_PATH}")
+        cookie_entries = install_youtube_cookies(argv[index + 1])
+        print(f"✅ YouTube cookies installed: validated {cookie_entries} entries at {YTDL_COOKIES_PATH}")
         return True
     if "--ytdl-health" in argv:
         print(json.dumps(get_ytdl_health(), indent=2))
