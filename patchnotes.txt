@@ -18,7 +18,7 @@ Summary: Improved playback efficiency, queue reliability, playlist safety, comma
 - Playlists: saved playlists are now isolated per Discord server.
 - Playlist storage: writes are locked and atomically replaced to prevent corruption or lost updates.
 - Playlist storage: existing user-based data migrates automatically when first accessed.
-- Commands: music-channel restrictions are applied consistently when MUSIC_CHANNEL_ID is set.
+- Commands: removed the obsolete single-text-channel restriction; commands now work in any server text channel.
 - Voice controls: users must join the bot's active voice channel before controlling playback.
 
 🔑 YOUTUBE AUTH & POT

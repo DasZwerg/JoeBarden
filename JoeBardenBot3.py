@@ -92,8 +92,6 @@ os.environ['PATH'] = os.pathsep.join(
 )
 
 token = os.getenv("DISCORD_TOKEN")
-_music_channel_raw = os.getenv("MUSIC_CHANNEL_ID", "").strip()
-MUSIC_CHANNEL_ID = int(_music_channel_raw) if _music_channel_raw else None
 _cookies_env = os.getenv("YTDL_COOKIES_PATH", "").strip()
 _cookies_default = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt"))
 YTDL_COOKIES_PATH = os.path.abspath(os.path.expanduser(_cookies_env or _cookies_default))
@@ -648,21 +646,7 @@ def fetch_lyrics(query: str) -> tuple[Optional[str], Optional[str]]:
     return lyrics, None
 
 
-def music_channel_only():
-    async def predicate(ctx: commands.Context):
-        if MUSIC_CHANNEL_ID is not None and ctx.channel.id != MUSIC_CHANNEL_ID:
-            await ctx.send(
-                f"❌ Use music commands in <#{MUSIC_CHANNEL_ID}> only."
-            )
-            return False
-        return True
-    return commands.check(predicate)
-
 class VoiceError(Exception):
-    pass
-
-
-class MusicChannelError(commands.CheckFailure):
     pass
 
 
@@ -1216,13 +1200,6 @@ class VoiceState:
 
 
 class Music(commands.Cog):
-    MUSIC_COMMANDS = {
-        'join', 'summon', 'leave', 'volume', 'now', 'pause', 'resume', 'stop', 'clear',
-        'skip', 'queue', 'shuffle', 'remove', 'loop', 'play', 'lyrics', 'nightcore',
-        'slowmo', 'vaporwave', 'reverse', 'bass', 'lofi', 'echo', 'tremolo', 'fadein',
-        'effects', 'replay', 'history', 'playlist', 'votemode', 'mood', 'stats', 'nowbar',
-        'play_spotify', 'bard', 'bidenblast',
-    }
     VOICE_COMMANDS = {
         'leave', 'volume', 'pause', 'resume', 'stop', 'clear', 'skip', 'shuffle', 'remove',
         'loop', 'play', 'nightcore', 'slowmo', 'vaporwave', 'reverse', 'bass', 'lofi',
@@ -1299,9 +1276,6 @@ class Music(commands.Cog):
             raise commands.NoPrivateMessage('This command can\'t be used in DM channels.')
 
         command_name = ctx.command.name if ctx.command else ""
-        if command_name in self.MUSIC_COMMANDS and MUSIC_CHANNEL_ID is not None and ctx.channel.id != MUSIC_CHANNEL_ID:
-            raise MusicChannelError()
-
         state = self.voice_states.get(ctx.guild.id)
         if command_name in self.VOICE_COMMANDS and state and state.voice and state.voice.channel:
             author_channel = getattr(getattr(ctx.author, "voice", None), "channel", None)
@@ -1313,9 +1287,7 @@ class Music(commands.Cog):
         ctx.voice_state = self.get_voice_state(ctx)
 
     async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
-        if isinstance(error, MusicChannelError):
-            await ctx.send(f"❌ Use music commands in <#{MUSIC_CHANNEL_ID}> only.")
-        elif isinstance(error, VoiceChannelError):
+        if isinstance(error, VoiceChannelError):
             await ctx.send("❌ Join my voice channel before controlling playback.")
         elif isinstance(error, commands.CommandOnCooldown):
             await ctx.send(f"⏳ Slow down — this command is on cooldown. Try again in {error.retry_after:.1f}s.")
@@ -1342,8 +1314,7 @@ class Music(commands.Cog):
                 title="🎸 Joe Barden Bot",
                 description=(
                     "Joe Barden is your Discord music bard — queue tracks, "
-                    "manage playlists, apply audio effects, and summon the AI bard.\n"
-                    "All music commands work in the designated music channel only."
+                    "manage playlists, apply audio effects, and summon the AI bard."
                 ),
                 color=discord.Color.blurple(),
             )
@@ -1436,7 +1407,6 @@ class Music(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.command(name='join', invoke_without_subcommand=True)
-    @music_channel_only()
     async def _join(self, ctx: commands.Context):
         """Join your current voice channel.
 
@@ -1453,7 +1423,6 @@ class Music(commands.Cog):
         ctx.voice_state.voice = await destination.connect()
 
     @commands.command(name='summon')
-    @music_channel_only()
     async def _summon(self, ctx: commands.Context, *, channel: discord.VoiceChannel = None):
         """Move the bot to a specific voice channel.
 
@@ -1673,7 +1642,6 @@ class Music(commands.Cog):
         await ctx.send(f'🔁 Loop is now {state}.')
 
     @commands.command(name='play')
-    @music_channel_only()
     async def _play(self, ctx: commands.Context, *, search: str):
         """Play a track from a query or URL.
 
@@ -2305,7 +2273,6 @@ class Music(commands.Cog):
         await ctx.send(f"🗳️ Vote-skip mode is now {state}.")
 
     @commands.command(name='mood')
-    @music_channel_only()
     async def _mood(self, ctx: commands.Context, *, mood: str):
         """Queue a preset mood playlist.
 
@@ -2560,7 +2527,6 @@ class Music(commands.Cog):
         return context
 
     @commands.command(name='bard')
-    @music_channel_only()
     @commands.cooldown(1, 45, commands.BucketType.user)
     async def _bard(self, ctx: commands.Context, *, request: str):
         """Ask Joe Barden the Bard for music — he'll ramble, then queue songs for you.

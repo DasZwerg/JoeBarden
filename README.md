@@ -192,7 +192,6 @@ On Windows Command Prompt, use `copy .env.example .env` instead. The resulting `
 DISCORD_TOKEN=your_discord_bot_token
 GEMINI_API_KEY=your_gemini_api_key
 GROQ_API_KEY=your_groq_api_key        # optional
-MUSIC_CHANNEL_ID=123456789                 # optional
 YTDL_COOKIES_PATH=/path/to/cookies.txt     # optional
 YTDL_POT_PROVIDER_URL=http://127.0.0.1:4416  # optional
 ```
@@ -202,7 +201,6 @@ YTDL_POT_PROVIDER_URL=http://127.0.0.1:4416  # optional
 | `DISCORD_TOKEN` | ✅ Yes | Your Discord bot token |
 | `GEMINI_API_KEY` | ✅ Yes (for AI) | Powers `$ask`, `$bard`, `$roastdj` |
 | `GROQ_API_KEY` | ⚪ Optional | AI fallback when Gemini is at quota |
-| `MUSIC_CHANNEL_ID` | ⚪ Optional | Restricts music commands to one channel |
 | `YTDL_COOKIES_PATH` | ⚪ Optional | Managed destination for YouTube cookies; defaults to `cookies.txt` |
 | `YTDL_POT_PROVIDER_URL` | ⚪ Optional | Local bgutil HTTP provider; defaults to `http://127.0.0.1:4416` |
 
@@ -470,7 +468,6 @@ The suite covers metadata-only queueing, FFmpeg effect composition, reverse limi
 **Commands not working:**
 - Make sure the command prefix is `$`
 - Verify bot has Message Content Intent enabled in the Developer Portal
-- Check if `MUSIC_CHANNEL_ID` is set — if so, music commands only work in that channel
 - Join the bot's active voice channel before using playback controls
 
 ### Error messages
@@ -478,6 +475,5 @@ The suite covers metadata-only queueing, FFmpeg effect composition, reverse limi
 |---|---|
 | `❌ ffmpeg is not installed` | FFmpeg not found in PATH |
 | `⏰ You've reached your daily AI limit` | AI quota exhausted — wait for daily reset or add Groq fallback |
-| `❌ Use music commands in #channel only` | `MUSIC_CHANNEL_ID` is set — use the designated channel |
 | `⚠️ No cookie file found` | Age-restricted content will fail — add `cookies.txt` or set `YTDL_COOKIES_PATH` |
 | `❌ Join my voice channel` | Join the bot's current voice channel before controlling playback |
