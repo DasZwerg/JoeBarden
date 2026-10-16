@@ -1,6 +1,6 @@
 # -*-  coding: utf-8 -*-
 
-#VERSION 3.3.3
+#VERSION 3.3.4
 #REFER TO PATCHNOTES FOR MORE DETAIL ON UPDATES
 #Copyright LPSC LLC.
 
@@ -29,6 +29,10 @@ from yt_dlp.utils import DownloadError
 import google.genai as genai
 from google.genai import types as genai_types
 import openai as openai_sdk
+
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(errors="replace")
 
 _ERROR_LOG_PATH = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "errors.txt"))
 _ERROR_LOG_MAX_BYTES = 100 * 1024 * 1024  # 100 MB
@@ -289,17 +293,19 @@ def generate_content_with_groq(contents: str, system_instruction: Optional[str] 
 def generate_content(contents: str, system_instruction: Optional[str] = None) -> str:
     """Top-level AI dispatcher: try Gemini first, fall back to Groq if all Gemini models fail.
 
-    Raises GeminiQuotaError if Gemini quota is exhausted (Groq is NOT tried for quota errors
-    since quota exhaustion is a billing/daily-limit state, not an outage).
-    Raises Exception only if both providers are unavailable.
+    Falls back to Groq when Gemini is unavailable or quota-limited.
+    Raises GeminiQuotaError only when Gemini is quota-limited and Groq is not configured.
     Synchronous — call via asyncio.to_thread() from async contexts.
     """
     # --- Gemini path ---
     if client and gemini_model:
         try:
             return generate_content_with_fallback(contents, system_instruction)
-        except GeminiQuotaError:
-            raise  # quota exhaustion propagates — don’t burn Groq on quota blocks
+        except GeminiQuotaError as gemini_err:
+            if not _groq_client:
+                raise
+            print("🔄 [AI] Gemini quota exhausted; falling back to Groq...")
+            log_error("[AI] Gemini quota exhausted; falling back to Groq", gemini_err)
         except Exception as gemini_err:
             print(f"⚠️  [AI] All Gemini models failed: {gemini_err}")
             log_error("[AI] All Gemini models failed", gemini_err)
@@ -553,11 +559,19 @@ class VoiceError(Exception):
     pass
 
 
+class MusicChannelError(commands.CheckFailure):
+    pass
+
+
+class VoiceChannelError(commands.CheckFailure):
+    pass
+
+
 class YTDLError(Exception):
     pass
 
 
-class YTDLSource(discord.PCMVolumeTransformer):
+class YTDLSource:
     YTDL_PLAYLIST_OPTIONS: dict[str, Any] = {
         'format': 'bestaudio/best',
         'noplaylist': False,
@@ -607,33 +621,36 @@ class YTDLSource(discord.PCMVolumeTransformer):
     ytdl = yt_dlp.YoutubeDL(cast(Any, YTDL_OPTIONS))
     ytdl_playlist = yt_dlp.YoutubeDL(cast(Any, YTDL_PLAYLIST_OPTIONS))
 
-    def __init__(self, ctx: commands.Context, source: discord.FFmpegPCMAudio, *, data: dict, volume: float = 0.5):
-        super().__init__(source, volume)
-
+    def __init__(self, ctx: commands.Context, *, data: dict):
         self.requester = ctx.author
         self.channel = ctx.channel
-        self.data = data
+        self.update_data(data)
 
+    def update_data(self, data: dict) -> None:
+        self.data = data
         self.uploader = data.get('uploader')
         self.uploader_url = data.get('uploader_url')
         date = data.get('upload_date')
-        self.upload_date = "unknown"
-        if date and len(date) == 8:
-            self.upload_date = f"{date[6:8]}.{date[4:6]}.{date[0:4]}"
-        self.title = data.get('title')
+        self.upload_date = f"{date[6:8]}.{date[4:6]}.{date[0:4]}" if date and len(date) == 8 else "unknown"
+        self.title = data.get('title') or self.data.get('webpage_url') or "Unknown track"
         self.thumbnail = data.get('thumbnail')
         self.description = data.get('description')
-        self.duration = self.parse_duration(int(data.get('duration') or 0))
         self.duration_seconds = int(data.get('duration') or 0)
+        self.duration = self.parse_duration(self.duration_seconds)
         self.tags = data.get('tags')
-        self.url = data.get('webpage_url')
+        self.url = data.get('webpage_url') or data.get('original_url')
         self.views = data.get('view_count')
         self.likes = data.get('like_count')
         self.dislikes = data.get('dislike_count')
         self.stream_url = data.get('url')
 
+    @classmethod
+    def from_flat_entry(cls, ctx: commands.Context, url: str, title: str):
+        return cls(ctx, data={'title': title, 'webpage_url': url, 'original_url': url})
+
     def __str__(self):
-        return '**{0.title}** by **{0.uploader}**'.format(self)
+        uploader = f" by **{self.uploader}**" if self.uploader else ""
+        return f"**{self.title}**{uploader}"
 
     @classmethod
     async def extract_playlist_entries(
@@ -679,7 +696,6 @@ class YTDLSource(discord.PCMVolumeTransformer):
         search: str,
         *,
         loop: Optional[asyncio.AbstractEventLoop] = None,
-        volume: float = 0.5,
     ):
         loop = loop or asyncio.get_running_loop()
         
@@ -714,18 +730,10 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
         data = cast(dict[str, Any], raw_data)
 
-        stream_url = data.get('url')
-        if not stream_url:
+        if not data.get('url'):
             raise YTDLError("Extractor returned no playable stream URL.")
 
-        try:
-            ffmpeg_source = discord.FFmpegPCMAudio(stream_url, **cls.FFMPEG_OPTIONS)
-        except FileNotFoundError as exc:
-            raise YTDLError("ffmpeg binary not found. Install ffmpeg and ensure it is in PATH.") from exc
-        except discord.ClientException as exc:
-            raise YTDLError(f"ffmpeg initialization failed: {exc}") from exc
-
-        return cls(ctx, ffmpeg_source, data=data, volume=volume)
+        return cls(ctx, data=data)
 
 
     @staticmethod
@@ -794,7 +802,7 @@ class LocalAudioSource:
 class Song:
     __slots__ = ('source', 'requester')
 
-    def __init__(self, source: YTDLSource):
+    def __init__(self, source: YTDLSource | LocalAudioSource):
         self.source = source
         self.requester = source.requester
 
@@ -845,6 +853,36 @@ class SongQueue(asyncio.Queue):
         self._items().appendleft(item)
 
 
+REVERSE_MAX_DURATION_SECONDS = 15 * 60
+
+
+def build_ffmpeg_options(effects: dict[str, bool], duration_seconds: int) -> tuple[dict[str, Any], bool]:
+    options = dict(YTDLSource.FFMPEG_OPTIONS)
+    reverse_allowed = 0 < duration_seconds <= REVERSE_MAX_DURATION_SECONDS
+    filters: list[str] = []
+    if effects.get("reverse") and reverse_allowed:
+        filters.append("areverse")
+    if effects.get("nightcore"):
+        filters.append("asetrate=48000*1.15,aresample=48000")
+    if effects.get("slowmo"):
+        filters.append("atempo=0.85")
+    if effects.get("vaporwave"):
+        filters.append("asetrate=48000*0.8,aresample=48000,aecho=0.8:0.9:1000|1800:0.9|0.9")
+    if effects.get("bass"):
+        filters.append("bass=g=15")
+    if effects.get("lofi"):
+        filters.append("acrusher=level_in=1:level_out=1:bits=8:mode=log")
+    if effects.get("echo"):
+        filters.append("aecho=0.8:0.5:1000|2000|3000:0.5|0.3|0.2")
+    if effects.get("tremolo"):
+        filters.append("apulsator=mode=sine:hz=2")
+    if effects.get("fadein"):
+        filters.append("afade=t=in:st=0:d=3")
+    if filters:
+        options["options"] = "-vn -b:a 192k -af " + ",".join(filters)
+    return options, effects.get("reverse", False) and not reverse_allowed
+
+
 class VoiceState:
     def __init__(self, bot: commands.Bot, ctx: commands.Context):
         self.bot = bot
@@ -875,11 +913,6 @@ class VoiceState:
         self.songs_played = 0
 
         self.audio_player = asyncio.create_task(self.audio_player_task())
-
-    def __del__(self):
-        audio_player = getattr(self, "audio_player", None)
-        if audio_player:
-            audio_player.cancel()
 
     @property
     def loop(self):
@@ -945,6 +978,8 @@ class VoiceState:
                         fresh_data = next((e for e in entries if isinstance(e, dict)), None)
                     if isinstance(fresh_data, dict):
                         stream_url = fresh_data.get('url')
+                        if isinstance(source_metadata, YTDLSource):
+                            source_metadata.update_data(fresh_data)
                 except Exception as resolve_exc:
                     print(f"[Player] Stream URL re-resolve failed, falling back to cached URL: {resolve_exc}")
                     log_error("[Player] Stream URL re-resolve failed", resolve_exc)
@@ -958,32 +993,25 @@ class VoiceState:
             # Fix B: Use a flag so exception paths don't skip self.next.wait(), preventing queue desync.
             played = False
             try:
-                # Re-create FFmpeg source at play time to reduce stale/expired stream issues.
-                ffmpeg_options = dict(YTDLSource.FFMPEG_OPTIONS)
-                
-                # Build a composable FFmpeg filter chain from all active effects.
-                # areverse is placed first as it must precede time-domain filters.
-                _filters: list[str] = []
-                if self.reverse:
-                    _filters.append("areverse")
-                if self.nightcore:
-                    _filters.append("asetrate=48000*1.15,aresample=48000")
-                if self.slowmo:
-                    _filters.append("atempo=0.85")
-                if self.vaporwave:
-                    _filters.append("asetrate=48000*0.8,aresample=48000,aecho=0.8:0.9:1000|1800:0.9|0.9")
-                if self.bass:
-                    _filters.append("bass=g=15")
-                if self.lofi:
-                    _filters.append("acrusher=level_in=1:level_out=1:bits=8:mode=log")
-                if self.echo:
-                    _filters.append("aecho=0.8:0.5:1000|2000|3000:0.5|0.3|0.2")
-                if self.tremolo:
-                    _filters.append("apulsator=mode=sine:hz=2")
-                if self.fadein:
-                    _filters.append("afade=t=in:st=0:d=3")
-                if _filters:
-                    ffmpeg_options["options"] = "-vn -b:a 192k -af " + ",".join(_filters)
+                effects = {
+                    "reverse": self.reverse,
+                    "nightcore": self.nightcore,
+                    "slowmo": self.slowmo,
+                    "vaporwave": self.vaporwave,
+                    "bass": self.bass,
+                    "lofi": self.lofi,
+                    "echo": self.echo,
+                    "tremolo": self.tremolo,
+                    "fadein": self.fadein,
+                }
+                ffmpeg_options, reverse_skipped = build_ffmpeg_options(
+                    effects, source_metadata.duration_seconds
+                )
+                if reverse_skipped:
+                    await channel.send(
+                        f"⚠️ Reverse was skipped because tracks must have a known duration of "
+                        f"{REVERSE_MAX_DURATION_SECONDS // 60} minutes or less."
+                    )
 
                 if not self.voice:
                     await self._send_player_error(channel, "Voice connection dropped before playback started.")
@@ -1080,28 +1108,50 @@ class VoiceState:
 
 
 class Music(commands.Cog):
+    MUSIC_COMMANDS = {
+        'join', 'summon', 'leave', 'volume', 'now', 'pause', 'resume', 'stop', 'clear',
+        'skip', 'queue', 'shuffle', 'remove', 'loop', 'play', 'lyrics', 'nightcore',
+        'slowmo', 'vaporwave', 'reverse', 'bass', 'lofi', 'echo', 'tremolo', 'fadein',
+        'effects', 'replay', 'history', 'playlist', 'votemode', 'mood', 'stats', 'nowbar',
+        'play_spotify', 'bard', 'bidenblast',
+    }
+    VOICE_COMMANDS = {
+        'leave', 'volume', 'pause', 'resume', 'stop', 'clear', 'skip', 'shuffle', 'remove',
+        'loop', 'play', 'nightcore', 'slowmo', 'vaporwave', 'reverse', 'bass', 'lofi',
+        'echo', 'tremolo', 'fadein', 'replay', 'votemode', 'mood', 'bard',
+        'bidenblast',
+    }
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.voice_states = {}
         self.playlists_path = os.path.join(os.path.dirname(__file__), "playlists.json")
+        self.playlists_lock = asyncio.Lock()
         self.disconnect_tasks: dict[int, asyncio.Task] = {}
 
-    def _read_playlists(self) -> dict[str, dict[str, list[str]]]:
+    def _read_playlists(self, guild_id: int) -> dict[str, Any]:
         if not os.path.exists(self.playlists_path):
-            return {}
+            return {"version": 2, "guilds": {}}
         try:
             with open(self.playlists_path, "r", encoding="utf-8") as fp:
                 data = json.load(fp)
-            if isinstance(data, dict):
+            if not isinstance(data, dict):
+                raise ValueError("Playlist data must be a JSON object")
+            if data.get("version") == 2 and isinstance(data.get("guilds"), dict):
                 return data
-        except Exception:
-            pass
-        return {}
+            return {"version": 2, "guilds": {str(guild_id): data}}
+        except Exception as exc:
+            log_error("[playlists] Failed to read playlists", exc)
+            return {"version": 2, "guilds": {}}
 
-    def _write_playlists(self, data: dict[str, dict[str, list[str]]]) -> None:
+    def _write_playlists(self, data: dict[str, Any]) -> None:
+        temporary_path = f"{self.playlists_path}.tmp"
         try:
-            with open(self.playlists_path, "w", encoding="utf-8") as fp:
+            with open(temporary_path, "w", encoding="utf-8") as fp:
                 json.dump(data, fp, ensure_ascii=False, indent=2)
+                fp.flush()
+                os.fsync(fp.fileno())
+            os.replace(temporary_path, self.playlists_path)
         except Exception as e:
             print(f"❌ [playlists] Failed to write playlists: {e}")
             log_error("[playlists] Failed to write playlists", e)
@@ -1139,6 +1189,16 @@ class Music(commands.Cog):
     def cog_check(self, ctx: commands.Context):
         if not ctx.guild:
             raise commands.NoPrivateMessage('This command can\'t be used in DM channels.')
+
+        command_name = ctx.command.name if ctx.command else ""
+        if command_name in self.MUSIC_COMMANDS and MUSIC_CHANNEL_ID is not None and ctx.channel.id != MUSIC_CHANNEL_ID:
+            raise MusicChannelError()
+
+        state = self.voice_states.get(ctx.guild.id)
+        if command_name in self.VOICE_COMMANDS and state and state.voice and state.voice.channel:
+            author_channel = getattr(getattr(ctx.author, "voice", None), "channel", None)
+            if author_channel != state.voice.channel:
+                raise VoiceChannelError()
         return True
 
     async def cog_before_invoke(self, ctx: commands.Context):
@@ -1147,7 +1207,11 @@ class Music(commands.Cog):
     async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
         print(f"❌ [cog_command_error] {ctx.command}: {type(error).__name__}: {error}")
         log_error(f"[cog_command_error] {ctx.command}: {type(error).__name__}: {error}", error if isinstance(error, BaseException) else None)
-        if isinstance(error, commands.CommandOnCooldown):
+        if isinstance(error, MusicChannelError):
+            await ctx.send(f"❌ Use music commands in <#{MUSIC_CHANNEL_ID}> only.")
+        elif isinstance(error, VoiceChannelError):
+            await ctx.send("❌ Join my voice channel before controlling playback.")
+        elif isinstance(error, commands.CommandOnCooldown):
             await ctx.send(f"⏳ Slow down — this command is on cooldown. Try again in {error.retry_after:.1f}s.")
         elif isinstance(error, commands.MissingRequiredArgument):
             await ctx.send(f"❌ Missing argument: `{error.param.name}`. Use `$help` for usage.")
@@ -1541,28 +1605,11 @@ class Music(commands.Cog):
                 content=f"📋 Found **{len(entries)}** track(s){cap_note} — queuing now..."
             )
 
-            added = 0
-            failed = 0
-            async with ctx.typing():
-                for entry_url, entry_title in entries:
-                    try:
-                        source = await YTDLSource.create_source(
-                            ctx,
-                            entry_url,
-                            loop=asyncio.get_running_loop(),
-                            volume=ctx.voice_state.volume,
-                        )
-                        await ctx.voice_state.songs.put(Song(source))
-                        added += 1
-                    except Exception as exc:
-                        print(f"⚠️  [play] Skipping playlist entry '{entry_title}': {type(exc).__name__}: {exc}")
-                        log_error(f"[play] Skipping playlist entry '{entry_title}'", exc)
-                        failed += 1
+            for entry_url, entry_title in entries:
+                source = YTDLSource.from_flat_entry(ctx, entry_url, entry_title)
+                await ctx.voice_state.songs.put(Song(source))
 
-            result = f"✅ Queued **{added}** track(s) from playlist."
-            if failed:
-                result += f" ({failed} skipped — unavailable or region-locked)"
-            await status_msg.edit(content=result)
+            await status_msg.edit(content=f"✅ Queued **{len(entries)}** track(s) from playlist.")
             return
 
         # --- Single track path ---
@@ -1580,7 +1627,6 @@ class Music(commands.Cog):
                     ctx,
                     resolved_search,
                     loop=asyncio.get_running_loop(),
-                    volume=ctx.voice_state.volume,
                 )
             except YTDLError as exc:
                 await ctx.send(f"❌ Unable to queue track: {exc}")
@@ -2054,20 +2100,22 @@ class Music(commands.Cog):
         """
         action = action.lower().strip()
         uid = str(ctx.author.id)
-        data = self._read_playlists()
+        async with self.playlists_lock:
+            data = self._read_playlists(ctx.guild.id)
+            guild_playlists = data["guilds"].setdefault(str(ctx.guild.id), {})
 
         if action == "list":
-            user_playlists = data.get(uid, {})
+            user_playlists = guild_playlists.get(uid, {})
             if not user_playlists:
                 return await ctx.send("You have no saved playlists.")
             names = ", ".join(f"`{n}`" for n in user_playlists)
             return await ctx.send(f"Your playlists: {names}")
 
         if action == "view":
-            if not data:
+            if not guild_playlists:
                 return await ctx.send("No playlists have been saved yet.")
             lines = []
-            for user_id, user_playlists in data.items():
+            for user_id, user_playlists in guild_playlists.items():
                 if not user_playlists:
                     continue
                 owner = ctx.guild.get_member(int(user_id))
@@ -2096,42 +2144,40 @@ class Music(commands.Cog):
                 tracks.append(ctx.voice_state.current.source.url or ctx.voice_state.current.source.title)
             for song in ctx.voice_state.songs:
                 tracks.append(song.source.url or song.source.title)
-            if uid not in data:
-                data[uid] = {}
-            data[uid][name] = tracks
-            self._write_playlists(data)
+            async with self.playlists_lock:
+                data = self._read_playlists(ctx.guild.id)
+                guild_playlists = data["guilds"].setdefault(str(ctx.guild.id), {})
+                guild_playlists.setdefault(uid, {})[name] = tracks
+                self._write_playlists(data)
             return await ctx.send(f"✅ Saved **{name}** ({len(tracks)} tracks).")
 
         if action == "load":
-            tracks = data.get(uid, {}).get(name)
+            tracks = guild_playlists.get(uid, {}).get(name)
             if not tracks:
                 return await ctx.send(f"No playlist named **{name}**.")
-            if not ctx.voice_state.voice:
+            if ctx.voice_state.voice and ctx.voice_state.voice.channel:
+                author_channel = getattr(getattr(ctx.author, "voice", None), "channel", None)
+                if author_channel != ctx.voice_state.voice.channel:
+                    return await ctx.send("❌ Join my voice channel before loading a playlist.")
+            else:
                 await ctx.invoke(self._join)
 
-            await ctx.send(f"📋 Loading **{name}** — {len(tracks)} tracks...")
-            added = 0
-            async with ctx.typing():
-                for query in tracks:
-                    try:
-                        source = await YTDLSource.create_source(
-                            ctx,
-                            query,
-                            loop=asyncio.get_running_loop(),
-                            volume=ctx.voice_state.volume,
-                        )
-                        await ctx.voice_state.songs.put(Song(source))
-                        added += 1
-                    except Exception:
-                        continue
-            return await ctx.send(f"✅ Loaded **{name}** — {added}/{len(tracks)} tracks queued.")
+            for query in tracks:
+                source = YTDLSource.from_flat_entry(ctx, query, query)
+                await ctx.voice_state.songs.put(Song(source))
+            return await ctx.send(f"✅ Loaded **{name}** — {len(tracks)} tracks queued.")
 
         if action == "delete":
-            if uid in data and name in data[uid]:
-                del data[uid][name]
+            async with self.playlists_lock:
+                data = self._read_playlists(ctx.guild.id)
+                guild_playlists = data["guilds"].setdefault(str(ctx.guild.id), {})
+                if uid not in guild_playlists or name not in guild_playlists[uid]:
+                    return await ctx.send(f"No playlist named **{name}**.")
+                del guild_playlists[uid][name]
+                if not guild_playlists[uid]:
+                    del guild_playlists[uid]
                 self._write_playlists(data)
-                return await ctx.send(f"🗑️ Deleted playlist **{name}**.")
-            return await ctx.send(f"No playlist named **{name}**.")
+            return await ctx.send(f"🗑️ Deleted playlist **{name}**.")
 
         await ctx.send("Unknown action. Use: save | load | list | delete")
 
@@ -2170,7 +2216,7 @@ class Music(commands.Cog):
             for query in playlist:
                 try:
                     source = await YTDLSource.create_source(
-                        ctx, query, loop=asyncio.get_running_loop(), volume=ctx.voice_state.volume
+                        ctx, query, loop=asyncio.get_running_loop()
                     )
                     await ctx.voice_state.songs.put(Song(source))
                     added += 1
@@ -2461,7 +2507,6 @@ Then provide QUEUE_SONGS with 3-5 real, searchable song titles that match the re
                                 ctx,
                                 f"ytsearch:{song_title}",
                                 loop=asyncio.get_running_loop(),
-                                volume=ctx.voice_state.volume,
                             )
                             await ctx.voice_state.songs.put(Song(source))
                             added += 1
@@ -2568,7 +2613,13 @@ def random_guild_emoji(guild: Optional[discord.Guild]):
     return None
 
 
-bot = commands.Bot(command_prefix='$', description='Im Joe Barden and I approve this message.', intents=intents, help_command=None)
+class JoeBardenBot(commands.Bot):
+    async def setup_hook(self) -> None:
+        await self.add_cog(Music(self))
+        self.gemini_validation_task = asyncio.create_task(_validate_gemini_model())
+
+
+bot = JoeBardenBot(command_prefix='$', description='Im Joe Barden and I approve this message.', intents=intents, help_command=None)
 
 @bot.event
 async def on_message(message):
@@ -2683,14 +2734,11 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 @bot.event
 async def on_ready():
     print('Logged in as:\n{0.user.name}\n{0.user.id}'.format(bot))
-    if bot.get_cog("Music") is None:
-        await bot.add_cog(Music(bot))
-    asyncio.create_task(_validate_gemini_model())
     print(f"Connected to {len(bot.guilds)} server(s):")
     for guild in bot.guilds:
         print(f"  - {guild.name} (ID: {guild.id})")
 
-if not token:
-    raise RuntimeError("DISCORD_TOKEN is not set. Add it to your environment or .env file.")
-
-bot.run(token)
+if __name__ == "__main__":
+    if not token:
+        raise RuntimeError("DISCORD_TOKEN is not set. Add it to your environment or .env file.")
+    bot.run(token)

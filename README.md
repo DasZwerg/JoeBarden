@@ -279,16 +279,18 @@ Discord user → $play <input>
   │    └─ Plain text → treated as YouTube search query (ytsearch:)
   │
   ├─ yt-dlp metadata extraction (async, run in thread executor)
+  │    ├─ Playlist entries stay lightweight until they are played
   │    ├─ Proof-of-origin token injected by bgutil-ytdlp-pot-provider plugin
   │    ├─ Browser-spoofed User-Agent headers to reduce bot fingerprinting
   │    ├─ Randomized request delay (1–3s) between calls
   │    └─ cookiefile injected if YTDL_COOKIES_PATH is set
   │
-  ├─ Song object queued into asyncio.Queue (SongQueue)
+  ├─ Metadata-only Song object queued into asyncio.Queue (SongQueue)
   │
   └─ audio_player_task (background asyncio coroutine, one per guild)
-       ├─ Dequeues next Song, re-resolves a fresh stream URL at play time
-       │    (stream URLs from YouTube expire; re-resolving prevents stale URL errors)
+       ├─ Dequeues the next Song and resolves a fresh stream URL at play time
+       │    (stream URLs from YouTube expire; resolving here prevents stale URL errors)
+       ├─ Creates one FFmpeg process only when playback begins
        ├─ Builds FFmpeg filter chain from all active effect flags
        │    └─ e.g. reverse → nightcore → bass → echo → joined as -af filter string
        ├─ discord.FFmpegPCMAudio streams audio over UDP via Discord voice gateway
@@ -297,7 +299,7 @@ Discord user → $play <input>
        └─ After track ends → next.set() → loop iterates to next queued Song
 ```
 
-Each guild gets its own `VoiceState` instance with an independent queue, player task, effect flags, and volume. State is isolated, multiple guilds can run concurrently.
+Each guild gets its own `VoiceState` instance with an independent queue, player task, effect flags, and volume. Saved playlists are also scoped to the guild where they were created. State is isolated, multiple guilds can run concurrently.
 
 ### AI
 
@@ -310,7 +312,7 @@ AI model priority:
 
 ### Audio effects
 
-Effects are applied as an FFmpeg filter chain at playback time. Multiple effects can be stacked simultaneously — each one is independently toggled with `$<effect> on|off`. Effects apply to the next track played, not the current one mid-stream.
+Effects are applied as an FFmpeg filter chain at playback time. Multiple effects can be stacked simultaneously — each one is independently toggled with `$<effect> on|off`. Effects apply to the next track played, not the current one mid-stream. Reverse playback is limited to tracks with a known duration of 15 minutes or less to avoid FFmpeg buffering an unbounded stream.
 
 ### Music link resolution
 
@@ -347,10 +349,10 @@ Effects are applied as an FFmpeg filter chain at playback time. Multiple effects
 ### Playlists
 | Command | What it does |
 |---|---|
-| `$playlist save <name>` | Save current queue as a named playlist |
-| `$playlist load <name>` | Load a saved playlist into the queue |
-| `$playlist list` | Show your own saved playlists |
-| `$playlist view` | Show all playlists saved by anyone |
+| `$playlist save <name>` | Save current queue as a guild-specific playlist |
+| `$playlist load <name>` | Load one of your saved playlists into the queue |
+| `$playlist list` | Show your playlists in the current server |
+| `$playlist view` | Show playlists saved in the current server |
 | `$playlist delete <name>` | Delete one of your playlists |
 
 ### Audio effects
@@ -360,7 +362,7 @@ Effects are applied as an FFmpeg filter chain at playback time. Multiple effects
 | `$nightcore on/off` | Speed +15%, higher pitch |
 | `$slowmo on/off` | Speed -15%, lower pitch |
 | `$vaporwave on/off` | Slowed + echo aesthetic |
-| `$reverse on/off` | Play audio backwards |
+| `$reverse on/off` | Play tracks up to 15 minutes backwards |
 | `$bass on/off` | Heavy +15dB bass boost |
 | `$lofi on/off` | Crunchy vintage bit-crushed sound |
 | `$echo on/off` | Triple echo with decay |
@@ -424,6 +426,18 @@ $mood rage
 
 ---
 
+## Testing
+
+Run the focused unit tests without connecting to Discord:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+The suite covers metadata-only queueing, FFmpeg effect composition, reverse limits, playlist persistence, and AI provider fallback.
+
+---
+
 ## Troubleshooting
 
 ### Common problems
@@ -451,6 +465,7 @@ $mood rage
 - Make sure the command prefix is `$`
 - Verify bot has Message Content Intent enabled in the Developer Portal
 - Check if `MUSIC_CHANNEL_ID` is set — if so, music commands only work in that channel
+- Join the bot's active voice channel before using playback controls
 
 ### Error messages
 | Message | What it means |
@@ -459,6 +474,4 @@ $mood rage
 | `⏰ You've reached your daily AI limit` | AI quota exhausted — wait for daily reset or add Groq fallback |
 | `❌ Use music commands in #channel only` | `MUSIC_CHANNEL_ID` is set — use the designated channel |
 | `⚠️ No cookie file found` | Age-restricted content will fail — add `cookies.txt` or set `YTDL_COOKIES_PATH` |
-
-### AI Disclosure
-I have used AI to suppliment code, bugfix, and fix bugs. 
+| `❌ Join my voice channel` | Join the bot's current voice channel before controlling playback |
