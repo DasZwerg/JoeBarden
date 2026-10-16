@@ -8,17 +8,19 @@ import os
 import shutil
 import asyncio
 import functools
+import importlib.metadata
 import itertools
 import json
 import math
 import random
 import re
 import sys
+import tempfile
 import time
 import traceback
 import urllib.parse
 import urllib.request
-from typing import Any, Optional, cast
+from typing import Any, Callable, Optional, cast
 from datetime import datetime
 
 import yt_dlp
@@ -36,6 +38,14 @@ for _stream in (sys.stdout, sys.stderr):
 
 _ERROR_LOG_PATH = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "errors.txt"))
 _ERROR_LOG_MAX_BYTES = 100 * 1024 * 1024  # 100 MB
+_ERROR_REPORTER: Optional[Callable[[str], None]] = None
+
+
+def error_component(message: str) -> str:
+    match = re.match(r"\[([^\]]{1,40})\]", message)
+    if not match:
+        return "Runtime"
+    return re.sub(r"[^A-Za-z0-9 _-]", "", match.group(1)).strip() or "Runtime"
 
 
 def log_error(message: str, exc: Optional[BaseException] = None) -> None:
@@ -59,6 +69,11 @@ def log_error(message: str, exc: Optional[BaseException] = None) -> None:
                 fp.write(f"[{timestamp}] [log_error] Log exceeded 100 MB — rotated.\n\n")
     except Exception as log_exc:
         print(f"[log_error] Failed to write to errors.txt: {log_exc}", file=sys.stderr)
+    if _ERROR_REPORTER:
+        try:
+            _ERROR_REPORTER(error_component(message))
+        except Exception as report_exc:
+            print(f"[log_error] Failed to queue owner notification: {report_exc}", file=sys.stderr)
 
 
 intents = discord.Intents.none()
@@ -81,14 +96,75 @@ _music_channel_raw = os.getenv("MUSIC_CHANNEL_ID", "").strip()
 MUSIC_CHANNEL_ID = int(_music_channel_raw) if _music_channel_raw else None
 _cookies_env = os.getenv("YTDL_COOKIES_PATH", "").strip()
 _cookies_default = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "cookies.txt"))
-YTDL_COOKIES_PATH = _cookies_env if _cookies_env else _cookies_default if os.path.isfile(_cookies_default) else None
-if YTDL_COOKIES_PATH:
+YTDL_COOKIES_PATH = os.path.abspath(os.path.expanduser(_cookies_env or _cookies_default))
+YTDL_POT_PROVIDER_URL = os.getenv("YTDL_POT_PROVIDER_URL", "http://127.0.0.1:4416").strip().rstrip('/')
+_pot_url = urllib.parse.urlsplit(YTDL_POT_PROVIDER_URL)
+if _pot_url.scheme not in {"http", "https"} or not _pot_url.hostname or _pot_url.username or _pot_url.password:
+    raise RuntimeError("YTDL_POT_PROVIDER_URL must be an HTTP(S) URL without embedded credentials.")
+if os.path.isfile(YTDL_COOKIES_PATH):
     print(f"[Cookie] Loaded cookie file: {YTDL_COOKIES_PATH}")
 else:
-    print(f"[Cookie] WARNING: No cookie file found. Age-restricted content will fail. Set YTDL_COOKIES_PATH in .env or place cookies.txt at: {_cookies_default}")
+    print(f"[Cookie] WARNING: No cookie file found. Age-restricted content will fail. Install one at: {YTDL_COOKIES_PATH}")
 URL_RESOLVE_TIMEOUT_SECONDS = 8
 BOT_START_TIME = time.monotonic()
 DEBUG_MODE = "-debug" in sys.argv
+
+
+def install_youtube_cookies(source_path: str, destination_path: str = YTDL_COOKIES_PATH) -> None:
+    source = os.path.abspath(os.path.expanduser(source_path))
+    destination = os.path.abspath(os.path.expanduser(destination_path))
+    with open(source, "rb") as fp:
+        payload = fp.read(10 * 1024 * 1024 + 1)
+    if len(payload) > 10 * 1024 * 1024:
+        raise ValueError("Cookie file exceeds the 10 MB safety limit.")
+    text = payload.decode("utf-8", errors="replace")
+    if not any("Netscape HTTP Cookie File" in line for line in text.splitlines()[0:2]) or not any(
+        "youtube.com" in line.lower()
+        for line in text.splitlines()
+        if not line.startswith("#") or line.startswith("#HttpOnly_")
+    ):
+        raise ValueError("Expected a Netscape cookie file containing YouTube cookies.")
+    parent = os.path.dirname(destination)
+    if not os.path.isdir(parent):
+        raise ValueError(f"Cookie destination directory does not exist: {parent}")
+    temporary = f"{destination}.tmp"
+    with open(temporary, "wb") as fp:
+        fp.write(payload)
+        fp.flush()
+        os.fsync(fp.fileno())
+    if os.name != "nt":
+        os.chmod(temporary, 0o600)
+    os.replace(temporary, destination)
+
+
+def get_ytdl_health() -> dict[str, Any]:
+    cookie_exists = os.path.isfile(YTDL_COOKIES_PATH)
+    cookie_age = None
+    if cookie_exists:
+        cookie_age = max(0, int(time.time() - os.path.getmtime(YTDL_COOKIES_PATH)))
+
+    provider: dict[str, Any] = {"url": YTDL_POT_PROVIDER_URL, "reachable": False}
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(f"{YTDL_POT_PROVIDER_URL}/ping", timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8", errors="replace"))
+        provider.update(reachable=True, version=payload.get("version", "unknown"))
+    except Exception as exc:
+        provider["error"] = f"{type(exc).__name__}: {exc}"
+
+    try:
+        plugin_version = importlib.metadata.version("bgutil-ytdlp-pot-provider")
+    except importlib.metadata.PackageNotFoundError:
+        plugin_version = None
+
+    return {
+        "cookie_file": os.path.basename(YTDL_COOKIES_PATH),
+        "cookie_present": cookie_exists,
+        "cookie_age_seconds": cookie_age,
+        "pot_plugin_version": plugin_version,
+        "pot_provider": provider,
+    }
+
 
 # Preferred Gemini models in order of preference (cheapest/most efficient first).
 # NOTE: google-genai SDK 1.0+ removed the usable models.list() API.
@@ -572,43 +648,60 @@ class YTDLError(Exception):
 
 
 class YTDLSource:
-    YTDL_PLAYLIST_OPTIONS: dict[str, Any] = {
-        'format': 'bestaudio/best',
-        'noplaylist': False,
-        'extract_flat': 'in_playlist',
-        'quiet': True,
-        'socket_timeout': 15,
-        'geo_bypass': True,
-        **({'cookiefile': YTDL_COOKIES_PATH} if YTDL_COOKIES_PATH else {}),
-    }
+    @classmethod
+    def build_options(cls, *, playlist: bool = False) -> dict[str, Any]:
+        options: dict[str, Any] = {
+            'format': 'bestaudio/best',
+            'noplaylist': not playlist,
+            'quiet': True,
+            'socket_timeout': 15,
+            'geo_bypass': True,
+            'extractor_args': {
+                'youtube': {'player_client': ['mweb', 'web', 'default']},
+                'youtubepot-bgutilhttp': {'base_url': [YTDL_POT_PROVIDER_URL]},
+            },
+            'js_runtimes': {k: {} for k in ['node', 'bun', 'deno', 'quickjs'] if shutil.which(k)},
+            'remote_components': set(),
+            'compat_opts': set(),
+        }
+        if playlist:
+            options['extract_flat'] = 'in_playlist'
+        else:
+            options.update({
+                'default_search': 'ytsearch',
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                },
+                'sleep_interval': 1,
+                'max_sleep_interval': 3,
+                'sleep_interval_requests': 1,
+            })
+        if os.path.isfile(YTDL_COOKIES_PATH):
+            options['cookiefile'] = YTDL_COOKIES_PATH
+        return options
 
-    YTDL_OPTIONS: dict[str, Any] = {
-        'format': 'bestaudio/best',
-        'noplaylist': True,
-        'quiet': True,
-        'default_search': 'ytsearch',
-        'extractor_args': {'youtube': {'player_client': ['web', 'default']}},
-        'js_runtimes': {k: {} for k in ['node', 'bun', 'deno', 'quickjs'] if shutil.which(k)},
-        'remote_components': set(),
-        'compat_opts': set(),
-        # Impersonate a real browser to reduce bot detection
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        },
-        # Small random delay between requests to avoid machine-speed fingerprinting
-        'sleep_interval': 1,
-        'max_sleep_interval': 3,
-        'sleep_interval_requests': 1,
-        # Prevent hung connections
-        'socket_timeout': 15,
-        # Bypass geographic access checks
-        'geo_bypass': True,
-        **({'cookiefile': YTDL_COOKIES_PATH} if YTDL_COOKIES_PATH else {}),
-    }
-
-
+    @classmethod
+    def extract_info(cls, query: str, *, playlist: bool = False) -> Any:
+        options = cls.build_options(playlist=playlist)
+        cookie_snapshot = None
+        if 'cookiefile' in options:
+            fd, cookie_snapshot = tempfile.mkstemp(prefix="joe-barden-cookies-", suffix=".txt")
+            os.close(fd)
+            shutil.copyfile(YTDL_COOKIES_PATH, cookie_snapshot)
+            if os.name != "nt":
+                os.chmod(cookie_snapshot, 0o600)
+            options['cookiefile'] = cookie_snapshot
+        try:
+            with yt_dlp.YoutubeDL(cast(Any, options)) as ytdl:
+                return ytdl.extract_info(query, download=False)
+        finally:
+            if cookie_snapshot:
+                try:
+                    os.remove(cookie_snapshot)
+                except FileNotFoundError:
+                    pass
 
     FFMPEG_OPTIONS: dict[str, Any] = {
         'executable': 'ffmpeg',
@@ -616,10 +709,6 @@ class YTDLSource:
         'options': '-vn -b:a 192k'
     }
 
-
-
-    ytdl = yt_dlp.YoutubeDL(cast(Any, YTDL_OPTIONS))
-    ytdl_playlist = yt_dlp.YoutubeDL(cast(Any, YTDL_PLAYLIST_OPTIONS))
 
     def __init__(self, ctx: commands.Context, *, data: dict):
         self.requester = ctx.author
@@ -665,7 +754,7 @@ class YTDLSource:
         Uses flat extraction so no per-video metadata is fetched upfront.
         """
         loop = asyncio.get_running_loop()
-        partial = functools.partial(cls.ytdl_playlist.extract_info, url, download=False)
+        partial = functools.partial(cls.extract_info, url, playlist=True)
         try:
             raw: Any = await loop.run_in_executor(None, partial)
         except Exception as exc:
@@ -699,11 +788,7 @@ class YTDLSource:
     ):
         loop = loop or asyncio.get_running_loop()
         
-        partial = functools.partial(
-            cls.ytdl.extract_info,
-            search,
-            download=False
-        )
+        partial = functools.partial(cls.extract_info, search)
         try:
             raw_data: Any = await loop.run_in_executor(None, partial)
         except DownloadError as exc:
@@ -967,11 +1052,7 @@ class VoiceState:
             if webpage_url:
                 try:
                     loop = asyncio.get_running_loop()
-                    partial = functools.partial(
-                        YTDLSource.ytdl.extract_info,
-                        webpage_url,
-                        download=False
-                    )
+                    partial = functools.partial(YTDLSource.extract_info, webpage_url)
                     fresh_data = await loop.run_in_executor(None, partial)
                     if isinstance(fresh_data, dict) and 'entries' in fresh_data:
                         entries = fresh_data.get('entries') or []
@@ -1205,8 +1286,6 @@ class Music(commands.Cog):
         ctx.voice_state = self.get_voice_state(ctx)
 
     async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
-        print(f"❌ [cog_command_error] {ctx.command}: {type(error).__name__}: {error}")
-        log_error(f"[cog_command_error] {ctx.command}: {type(error).__name__}: {error}", error if isinstance(error, BaseException) else None)
         if isinstance(error, MusicChannelError):
             await ctx.send(f"❌ Use music commands in <#{MUSIC_CHANNEL_ID}> only.")
         elif isinstance(error, VoiceChannelError):
@@ -1220,6 +1299,9 @@ class Music(commands.Cog):
         elif isinstance(error, commands.NoPrivateMessage):
             await ctx.send("❌ This command cannot be used in DMs.")
         else:
+            original = getattr(error, "original", error)
+            print(f"❌ [cog_command_error] {ctx.command}: {type(original).__name__}: {original}")
+            log_error(f"[Command] Unexpected failure in {ctx.command}", original)
             await ctx.send("❌ Something went wrong. Please try again.")
 
     @commands.command(name='help')
@@ -2293,6 +2375,23 @@ class Music(commands.Cog):
         )
         await ctx.send(embed=embed)
 
+    @commands.command(name='ytdlhealth', hidden=True)
+    @commands.is_owner()
+    async def _ytdlhealth(self, ctx: commands.Context):
+        health = await asyncio.to_thread(get_ytdl_health)
+        provider = health["pot_provider"]
+        cookie_status = "missing"
+        if health["cookie_present"]:
+            cookie_status = f"present, updated {format_clock(health['cookie_age_seconds'])} ago"
+        provider_status = f"reachable, v{provider.get('version', 'unknown')}" if provider["reachable"] else "unreachable"
+        plugin_status = health["pot_plugin_version"] or "not installed"
+        await ctx.send(
+            "**yt-dlp health**\n"
+            f"Cookie `{health['cookie_file']}`: {cookie_status}\n"
+            f"POT plugin: {plugin_status}\n"
+            f"POT provider: {provider_status}"
+        )
+
     @commands.command(name='nowbar')
     async def _nowbar(self, ctx: commands.Context):
         """Show a progress bar for the current track.
@@ -2614,9 +2713,91 @@ def random_guild_emoji(guild: Optional[discord.Guild]):
 
 
 class JoeBardenBot(commands.Bot):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.error_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=100)
+        self.error_notification_task: Optional[asyncio.Task] = None
+        self.ytdl_health_task: Optional[asyncio.Task] = None
+        self._error_notified_at: dict[str, float] = {}
+
     async def setup_hook(self) -> None:
+        global _ERROR_REPORTER
         await self.add_cog(Music(self))
+        asyncio.get_running_loop().set_exception_handler(self.handle_loop_exception)
+        _ERROR_REPORTER = self.queue_error_notification
+        self.error_notification_task = asyncio.create_task(self.error_notification_worker())
+        self.ytdl_health_task = asyncio.create_task(self.ytdl_health_worker())
         self.gemini_validation_task = asyncio.create_task(_validate_gemini_model())
+
+    def handle_loop_exception(self, loop: asyncio.AbstractEventLoop, context: dict[str, Any]) -> None:
+        error = context.get("exception")
+        log_error("[Asyncio] Unhandled background task error", error if isinstance(error, BaseException) else None)
+        loop.default_exception_handler(context)
+
+    def queue_error_notification(self, component: str) -> None:
+        if self.loop.is_closed():
+            return
+        self.loop.call_soon_threadsafe(self._enqueue_error_notification, component)
+
+    def _enqueue_error_notification(self, component: str) -> None:
+        try:
+            self.error_queue.put_nowait(component)
+        except asyncio.QueueFull:
+            print("[ErrorNotify] Owner notification queue is full", file=sys.stderr)
+
+    async def error_notification_worker(self) -> None:
+        await self.wait_until_ready()
+        try:
+            application = await self.application_info()
+            owner = application.owner
+        except Exception as exc:
+            print(f"[ErrorNotify] Could not resolve bot owner: {exc}", file=sys.stderr)
+            return
+
+        while True:
+            component = await self.error_queue.get()
+            now = time.monotonic()
+            if now - self._error_notified_at.get(component, 0) < 300:
+                continue
+            self._error_notified_at[component] = now
+            timestamp = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+            try:
+                await owner.send(
+                    "Joe detected an operational error.\n"
+                    f"Component: **{component}**\n"
+                    f"Time: `{timestamp}`\n"
+                    "Check `errors.txt` on the server for technical details. "
+                    "Repeated alerts from this component are suppressed for 5 minutes."
+                )
+            except Exception as exc:
+                print(f"[ErrorNotify] Failed to DM bot owner: {exc}", file=sys.stderr)
+
+    async def ytdl_health_worker(self) -> None:
+        await self.wait_until_ready()
+        while True:
+            try:
+                health = await asyncio.to_thread(get_ytdl_health)
+                if not health["cookie_present"]:
+                    log_error("[CookieHealth] YouTube cookie file is missing")
+                if not health["pot_provider"]["reachable"]:
+                    log_error("[POTHealth] PO-token provider is unreachable")
+            except Exception as exc:
+                log_error("[YTDLHealth] Health check failed", exc)
+            await asyncio.sleep(3600)
+
+    async def on_error(self, event_method: str, *args, **kwargs) -> None:
+        error = sys.exc_info()[1]
+        log_error(f"[DiscordEvent] Unhandled error in {event_method}", error)
+
+    async def close(self) -> None:
+        global _ERROR_REPORTER
+        _ERROR_REPORTER = None
+        tasks = [self.error_notification_task, self.ytdl_health_task, getattr(self, "gemini_validation_task", None)]
+        for task in tasks:
+            if task and not task.done():
+                task.cancel()
+        await asyncio.gather(*(task for task in tasks if task), return_exceptions=True)
+        await super().close()
 
 
 bot = JoeBardenBot(command_prefix='$', description='Im Joe Barden and I approve this message.', intents=intents, help_command=None)
@@ -2738,7 +2919,22 @@ async def on_ready():
     for guild in bot.guilds:
         print(f"  - {guild.name} (ID: {guild.id})")
 
+def run_maintenance_cli(argv: list[str]) -> bool:
+    if "--install-cookies" in argv:
+        index = argv.index("--install-cookies")
+        if index + 1 >= len(argv):
+            raise RuntimeError("Usage: python JoeBardenBot3.py --install-cookies /path/to/cookies.txt")
+        install_youtube_cookies(argv[index + 1])
+        print(f"[Cookie] Installed validated YouTube cookies at {YTDL_COOKIES_PATH}")
+        return True
+    if "--ytdl-health" in argv:
+        print(json.dumps(get_ytdl_health(), indent=2))
+        return True
+    return False
+
+
 if __name__ == "__main__":
-    if not token:
-        raise RuntimeError("DISCORD_TOKEN is not set. Add it to your environment or .env file.")
-    bot.run(token)
+    if not run_maintenance_cli(sys.argv[1:]):
+        if not token:
+            raise RuntimeError("DISCORD_TOKEN is not set. Add it to your environment or .env file.")
+        bot.run(token)

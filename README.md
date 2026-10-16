@@ -127,68 +127,56 @@ ffmpeg -version
 
 **yt-dlp Cookies (optional — age-restricted content):**
 
-Some YouTube content (age restricted videos, regional content) requires authenticated cookies. The recommended approach uses yt-dlp directly rather than a browser extension:
+Some YouTube content requires an authenticated session. Use a dedicated YouTube account and export its YouTube cookies locally in Netscape/Mozilla format, following the current [yt-dlp cookie guidance](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies). The first line must contain `Netscape HTTP Cookie File`.
+
+Treat the export and the logged-in Firefox profile as credentials: keep them outside the repository, restrict filesystem permissions, and never send them through Discord. Joe does not read Firefox profile databases or store Google passwords, MFA seeds, or recovery codes.
+
+Install the export through the bot's local maintenance command. It validates the Netscape format, requires YouTube cookies, writes atomically, and restricts file permissions on Linux:
 
 ```bash
-# Extract cookies from your logged-in browser (Chrome example)
-yt-dlp --cookies-from-browser chrome --cookies cookies.txt "https://www.youtube.com"
+python JoeBardenBot3.py --install-cookies /path/to/exported-cookies.txt
 ```
 
-This exports all browser cookies for all sites to `cookies.txt`. Keep this file private. Other supported browsers: `firefox`, `edge`, `safari`, `brave`, `chromium`.
-
-Alternatively, use the [Get cookies.txt LOCALLY](https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc) extension for Chrome, or [cookies.txt](https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/) for Firefox. The file must be in Netscape/Mozilla format. The first line should read `# Netscape HTTP Cookie File`.
-
-Save the file as `cookies.txt` in the project root, or point `YTDL_COOKIES_PATH` at it.
+The destination defaults to `cookies.txt` in the project root. Set `YTDL_COOKIES_PATH` to use a different destination. Every extraction creates a fresh yt-dlp client, so a replaced cookie file is used immediately without restarting the bot.
 
 ### 6. Configure the bgutil POT provider (recommended)
 
 `bgutil-ytdlp-pot-provider` generates proof of origin tokens (POT) that make yt-dlp's YouTube requests appear more legitimate to Google's bot detection. Without it, requests from server IPs are more likely to hit 403 errors or the "Sign in to confirm you're not a bot" block.
 
-The plugin Python package is already listed in `requirements.txt` and installed via `pip install -r requirements.txt`. You still need to set up the token generation backend separately.
+The Python plugin is installed by `requirements.txt`; the token-generation server runs beside the bot and requires no credentials. Version 2.x or newer is required.
 
-**Requirements:** Node.js ≥ 20 or Deno ≥ 2.0.0, plus `git`.
-
-**Option A — HTTP server (recommended):**
+**Docker (recommended):**
 
 ```bash
-# Clone the provider repo (replace 1.3.1 with the latest release tag)
-git clone --single-branch --branch 1.3.1 \
+docker run --name bgutil-provider -d --init --restart unless-stopped \
+  -p 127.0.0.1:4416:4416 \
+  brainicism/bgutil-ytdlp-pot-provider:2.0.2
+```
+
+Binding explicitly to `127.0.0.1` is important. The provider is unauthenticated and must not be published to the internet or the wider LAN.
+
+**Native Node.js:**
+
+```bash
+git clone --single-branch --branch 2.0.2 \
   https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git
 cd bgutil-ytdlp-pot-provider/server
-
-# With Node.js:
 npm ci
 npx tsc
 node build/main.js
-
-# Or with Deno:
-deno install --allow-scripts=npm:canvas --frozen
-cd node_modules && deno run \
-  --allow-env --allow-net --allow-ffi=. --allow-read=. ../src/main.ts
 ```
 
-The server runs on `http://127.0.0.1:4416` by default. Once it's running, yt-dlp will automatically detect and use it — no additional configuration needed in the bot.
+Native provider 2.x binds to localhost on port `4416` by default and requires Node.js 22 or newer. For a different local port, start it with `--port 8080` and set `YTDL_POT_PROVIDER_URL=http://127.0.0.1:8080`.
 
-To run on a different port:
-```bash
-node build/main.js --port 8080
-# Then pass to yt-dlp manually:
-# --extractor-args "youtubepot-bgutilhttp:base_url=http://127.0.0.1:8080"
-```
+The bot configures the provider plugin explicitly and prefers YouTube's `mweb` client. PO tokens are generated on demand for each extraction; they are not stored as credentials. A PO token does not replace cookies and cannot bypass every datacenter-IP restriction.
 
-**Option B — Docker (simplest):**
+Check both components without connecting the Discord bot:
 
 ```bash
-docker run --name bgutil-provider -d --init brainicism/bgutil-ytdlp-pot-provider
+python JoeBardenBot3.py --ytdl-health
 ```
 
-Exposes port 4416. No Node.js/Deno required.
-
-**Option C — Script mode (no server required):**
-
-After cloning the repo as above, the plugin will invoke the script directly per yt-dlp call. This is slower and not suitable for high concurrency, but requires no running server. Just ensure `node` or `deno` is in PATH.
-
-See the [full bgutil README](https://github.com/Brainicism/bgutil-ytdlp-pot-provider) for advanced configuration.
+See the [full bgutil README](https://github.com/Brainicism/bgutil-ytdlp-pot-provider) for alternate Deno and script-mode setup.
 
 ### 7. Configure environment variables
 
@@ -198,8 +186,9 @@ Create a `.env` file in the project root:
 DISCORD_TOKEN=your_discord_bot_token
 GEMINI_API_KEY=your_gemini_api_key
 GROQ_API_KEY=your_groq_api_key        # optional
-MUSIC_CHANNEL_ID=123456789            # optional
-YTDL_COOKIES_PATH=/path/to/cookies.txt  # optional
+MUSIC_CHANNEL_ID=123456789                 # optional
+YTDL_COOKIES_PATH=/path/to/cookies.txt     # optional
+YTDL_POT_PROVIDER_URL=http://127.0.0.1:4416  # optional
 ```
 
 | Variable | Required | What it does |
@@ -208,7 +197,8 @@ YTDL_COOKIES_PATH=/path/to/cookies.txt  # optional
 | `GEMINI_API_KEY` | ✅ Yes (for AI) | Powers `$ask`, `$bard`, `$roastdj` |
 | `GROQ_API_KEY` | ⚪ Optional | AI fallback when Gemini is at quota |
 | `MUSIC_CHANNEL_ID` | ⚪ Optional | Restricts music commands to one channel |
-| `YTDL_COOKIES_PATH` | ⚪ Optional | Path to cookies.txt for age-restricted content |
+| `YTDL_COOKIES_PATH` | ⚪ Optional | Managed destination for YouTube cookies; defaults to `cookies.txt` |
+| `YTDL_POT_PROVIDER_URL` | ⚪ Optional | Local bgutil HTTP provider; defaults to `http://127.0.0.1:4416` |
 
 ### 8. Bot permissions
 
@@ -259,6 +249,14 @@ serverID | channelID | username: message here
 ```
 
 This is useful for verifying the bot can see messages and for troubleshooting command detection.
+
+### Error notifications
+
+Joe writes technical details and tracebacks to `errors.txt`. After login, operational errors are also reported by DM to the Discord application owner. DMs contain only the affected component and timestamp; paths, URLs, user input, exception text, and tracebacks remain on the server. Repeated alerts from the same component are suppressed for five minutes.
+
+The hourly yt-dlp health monitor reports missing cookies and an unreachable PO-token provider through the same owner DM path. The application owner can also run the hidden `$ytdlhealth` command for an immediate status check. Make sure the owner allows direct messages from the bot.
+
+Firefox cookie databases are not read automatically. When the dedicated browser session needs replacement, export a Netscape cookie file and use `--install-cookies`; Joe will alert the owner if the managed cookie file is missing.
 
 ---
 
@@ -449,7 +447,9 @@ The suite covers metadata-only queueing, FFmpeg effect composition, reverse limi
 **Music not playing:**
 - Verify FFmpeg is installed: `ffmpeg -version`
 - Check the URL is valid and public
-- Age restricted YouTube content needs a `cookies.txt` file (see `YTDL_COOKIES_PATH`)
+- Run `python JoeBardenBot3.py --ytdl-health` to check cookies and the POT provider
+- Replace an expired session with `python JoeBardenBot3.py --install-cookies <export>`
+- PO tokens do not bypass every block applied to datacenter IP addresses
 
 **AI not responding:**
 - Verify `GEMINI_API_KEY` is set correctly in `.env`

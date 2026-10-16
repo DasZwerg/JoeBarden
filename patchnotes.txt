@@ -1,6 +1,6 @@
 v3.3.4
 
-Summary: Improved playback efficiency, queue reliability, playlist safety, and command access controls.
+Summary: Improved playback efficiency, queue reliability, playlist safety, command access controls, and YouTube authentication maintenance.
 
 🔧 BUG FIXES
 - Dependencies: added the missing OpenAI SDK required by the optional Groq fallback.
@@ -21,8 +21,17 @@ Summary: Improved playback efficiency, queue reliability, playlist safety, and c
 - Commands: music-channel restrictions are applied consistently when MUSIC_CHANNEL_ID is set.
 - Voice controls: users must join the bot's active voice channel before controlling playback.
 
+🔑 YOUTUBE AUTH & POT
+- Cookies: added a local command that validates and atomically installs YouTube cookie exports.
+- Cookies: each extraction reloads current cookie state, so replacement no longer requires a bot restart.
+- POT provider: added explicit configurable bgutil HTTP provider integration with the mweb client preferred.
+- Health: added local and bot-owner-only checks for cookie, plugin, and provider status.
+- Monitoring: hourly checks report missing cookies and provider outages to the bot owner.
+- Error reporting: operational failures send sanitized, rate-limited owner DMs while details remain in errors.txt.
+- Security: provider URLs cannot contain embedded credentials, browser databases are not read automatically, and Docker binds to loopback only.
+
 🧪 TESTING
-- Added focused tests for queue metadata, FFmpeg filters, reverse limits, playlist storage, and AI fallback.
+- Added focused tests for queue metadata, FFmpeg filters, reverse limits, playlist storage, AI fallback, cookie replacement, POT configuration, and safe owner notifications.
 
 v3.3.3
 
