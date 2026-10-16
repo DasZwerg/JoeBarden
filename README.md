@@ -180,7 +180,13 @@ See the [full bgutil README](https://github.com/Brainicism/bgutil-ytdlp-pot-prov
 
 ### 7. Configure environment variables
 
-Create a `.env` file in the project root:
+Copy the tracked template, then replace the placeholder values you use:
+
+```bash
+cp .env.example .env
+```
+
+On Windows Command Prompt, use `copy .env.example .env` instead. The resulting `.env` file remains ignored by Git.
 
 ```env
 DISCORD_TOKEN=your_discord_bot_token
