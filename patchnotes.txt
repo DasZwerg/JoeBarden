@@ -1,3 +1,27 @@
+v3.4.0
+
+Summary: Separate conventional AI chat from the bard persona, add current-track music recommendations, and report actual provider token usage.
+
+AI COMMANDS
+- $ask: sends the user's question without a persona, music context, or persona-specific input filtering; announces that Gemini/Groq is responding out of character.
+- $ask: neutral response labels and failure messages replace bard roleplay; requests remain single-turn with no conversation history.
+- $bard: now works while music is playing and includes bounded metadata for the current track, with artist/uploader and genre when available.
+- $bard: requests such as "queue more music like this!" use the current track rather than the full queue; ambiguous requests without a current track prompt for clarification.
+- Persona: condensed the shared prompt while retaining folksy Biden-style medieval bard digressions; targets 2-4 short sentences under 100 words.
+- Queue instructions: isolated QUEUE_SONGS formatting to $bard so roast and general chat prompts no longer request internal queue markers.
+- $roastdj: successful AI roasts now increment the invoking user's request count; canned fallbacks do not.
+
+TOKEN ACCOUNTING
+- Capture Gemini usage_metadata and Groq usage from successful AI command responses, retaining provider/model identity through fallback.
+- $aistats: display per-user and global input, output, cached, reasoning, and total tokens, plus global provider/model breakdowns.
+- Provider totals are used directly; cached/reasoning categories are not added again, and missing fields are marked unreported with partial-report coverage when applicable.
+- Accounting stores no prompts or answer text, uses the server's local calendar day, and resets on process restart.
+- Existing application request limits remain unchanged; token statistics are not a billing statement and exclude startup probes and failed attempts without usage metadata.
+
+TESTING & DOCUMENTATION
+- Added regression tests for roast accounting, out-of-character chat, current-track context, provider metadata, fallback attribution, token aggregation, missing fields, and daily rollover.
+- Updated README command descriptions, usage-accounting scope, prompt behavior, and API-versus-subscription quota guidance.
+
 v3.3.4
 
 Summary: Improved playback efficiency, queue reliability, playlist safety, command access controls, and YouTube authentication maintenance.

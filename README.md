@@ -1,5 +1,7 @@
 # JoeBardenBot3
 
+Current release: **v3.4.0** — contextual music recommendations, out-of-character chat, and provider-reported token accounting.
+
 A Discord music bot with audio effects, AI integration, and way too many features. Uses discord.py, yt-dlp for audio, Google Gemini AI, and falls back to Groq when Gemini hits its limits.
 
 ---
@@ -27,10 +29,10 @@ A Discord music bot with audio effects, AI integration, and way too many feature
 > Multiple effects can be stacked at once. Use `$effects` to see what's active.
 
 ### AI
-- **General Q&A**: Ask anything with `$ask` — knows what song is playing
-- **Music DJ**: Get song recommendations with `$bard`
-- **Roast DJ**: AI roasts whoever's controlling the queue with `$roastdj`
-- **Usage tracking**: Check AI usage with `$aistats`
+- **General Q&A**: `$ask` sends your question directly to Gemini/Groq without a persona or music context, with an out-of-character notice
+- **Music DJ**: `$bard` stays in character and uses the current track to understand requests like "queue more music like this!"
+- **Roast DJ**: `$roastdj` roasts the current DJ without leaking song-queue instructions
+- **Usage tracking**: `$aistats` shows request counts and provider-reported tokens for you, globally, and by provider/model
 - **Dual AI**: Uses Gemini first, falls back to Groq when needed
 
 ### Other
@@ -312,6 +314,20 @@ AI model priority:
 2. `gemini-2.5-flash-lite` (Gemini fallback)
 3. Groq `llama-3.3-70b` → `llama-3.1-8b` → `mixtral-8x7b` (if `GROQ_API_KEY` is set)
 
+### AI command behavior and accounting
+
+- `$bard queue more music like this!` works during playback. Its prompt includes only the current track's bounded title, artist/uploader, and genre when available—not the upcoming queue or audio effects. Missing artist/genre metadata is not fabricated; the model may infer style from the title. If there is no current track, the prompt tells the model to ask for a song or artist when needed.
+- The shared bard persona preserves folksy Biden-style medieval rambling while requesting 2–4 short sentences under 100 words. `$roastdj` retains its shorter, under-200-character instruction. These are prompt targets, not hard truncation limits.
+- Only `$bard` receives the `QUEUE_SONGS:song1|song2|song3` output instruction. The bot removes that line from the displayed response and queues the songs.
+- `$ask` is a single-turn, out-of-character AI request, available during playback. It sends the question without the bard persona, persona-specific filtering, music context, or conversation history. The channel receives a Gemini/Groq out-of-character notice before the response.
+- `$ask`, `$bard`, and successful AI `$roastdj` responses count toward the existing bot-wide limits: 50 requests per user per day and 1,500 globally. Canned roasts and failed AI generations do not count as successful requests. These application limits are separate from provider quotas.
+
+`$aistats` reports input, output, cached, reasoning, and total tokens where returned by Gemini's `usage_metadata` or Groq's `usage`. It shows your totals, global totals, and global provider/model breakdowns. Cached tokens are a subset of input; reasoning tokens are reported separately and may already be included in provider totals. The bot uses the provider's total directly, without adding these categories together or estimating missing fields. Partial metadata shows how many responses reported each metric; absent fields display `unreported`, not a misleading zero.
+
+Accounting covers successful AI command responses, including Groq responses after Gemini fallback. It excludes startup probes and failed attempts that return no usage metadata, so it is not an authoritative billing statement. The bot stores only token counters and provider/model identifiers for accounting, not prompts or answer text. Request counts and token records are in memory, use the server's local calendar day, and reset on restart; they are not historical or persistent reports. No dollar-cost estimate is calculated.
+
+A Google AI Pro subscription does not by itself establish this bot's Gemini API quota or billing tier. Check the API key's project and billing settings in AI Studio; provider rate limits and subscription benefits are separate from the bot's local request limits.
+
 ### Audio effects
 
 Effects are applied as an FFmpeg filter chain at playback time. Multiple effects can be stacked simultaneously — each one is independently toggled with `$<effect> on|off`. Effects apply to the next track played, not the current one mid-stream. Reverse playback is limited to tracks with a known duration of 15 minutes or less to avoid FFmpeg buffering an unbounded stream.
@@ -376,10 +392,10 @@ Multiple effects can be active at the same time. Stack them freely.
 ### AI commands
 | Command | What it does |
 |---|---|
-| `$bard <request>` | Ask the AI DJ for song recommendations — queues them directly |
-| `$ask <question>` | Ask the AI anything — knows what's currently playing |
+| `$bard <request>` | In-character recommendations using the current track's context; queues songs |
+| `$ask <question>` | Direct, out-of-character Gemini/Groq Q&A without music context |
 | `$roastdj [@user]` | Get an AI roast of whoever's controlling the queue |
-| `$aistats` | Check AI usage and model status |
+| `$aistats` | Today's request limits and reported tokens, including provider/model breakdowns |
 
 ### Utility
 | Command | What it does |
@@ -436,7 +452,7 @@ Run the focused unit tests without connecting to Discord:
 python -m unittest discover -s tests -v
 ```
 
-The suite covers metadata-only queueing, FFmpeg effect composition, reverse limits, playlist persistence, and AI provider fallback.
+The suite covers metadata-only queueing, FFmpeg effect composition, reverse limits, playlist persistence, AI provider fallback, persona separation, current-track context, roast usage tracking, provider token metadata, missing/partial token reports, aggregation, and daily rollover.
 
 ---
 

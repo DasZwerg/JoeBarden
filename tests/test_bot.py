@@ -175,7 +175,214 @@ class ErrorNotificationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("secret", message)
 
 
+class AiUsageTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.cog = bot_module.Music(Mock())
+        self.ctx = SimpleNamespace(
+            author=SimpleNamespace(id=42, mention="<@42>", display_name="Caller"),
+            voice_state=SimpleNamespace(current=None),
+            send=AsyncMock(),
+        )
+        usage_patch = patch.object(bot_module, "AI_USAGE", {})
+        usage_patch.start()
+        self.addCleanup(usage_patch.stop)
+        token_patch = patch.object(bot_module, "AI_TOKEN_USAGE", {})
+        token_patch.start()
+        self.addCleanup(token_patch.stop)
+
+    async def test_roast_records_caller_usage_and_reports_it_for_either_provider(self):
+        target = SimpleNamespace(id=99, mention="<@99>", display_name="DJ")
+        self.ctx.voice_state.current = SimpleNamespace(
+            requester=target, source=SimpleNamespace(title="Test track")
+        )
+        for gemini, groq in (("gemini-test", None), (None, object())):
+            with self.subTest(gemini=gemini), patch.object(
+                bot_module, "gemini_model", gemini
+            ), patch.object(bot_module, "_groq_client", groq), patch.object(
+                self.cog, "_ai_quota_check", return_value=False
+            ), patch.object(bot_module, "generate_content", return_value=bot_module.AIResponse(
+                "Test roast", "Gemini" if gemini else "Groq", "test", SimpleNamespace(
+                    prompt_token_count=10, candidates_token_count=5, total_token_count=15,
+                    prompt_tokens=10, completion_tokens=5, total_tokens=15,
+                )
+            )) as generate:
+                bot_module.AI_USAGE.clear()
+                bot_module.AI_TOKEN_USAGE.clear()
+                self.ctx.send.reset_mock()
+
+                await self.cog._roastdj.callback(self.cog, self.ctx)
+                await self.cog._aistats.callback(self.cog, self.ctx)
+
+                generate.assert_called_once()
+                prompt, system_prompt = generate.call_args.args
+                self.assertNotIn("QUEUE_SONGS", prompt + system_prompt)
+                self.assertIn("Return only the roast", prompt)
+                self.assertEqual(bot_module.AI_USAGE, {bot_module.datetime.now().date(): {42: 1}})
+                self.assertEqual(self.ctx.send.await_args_list[0].args, ("<@99>, Test roast",))
+                fields = self.ctx.send.await_args.kwargs["embed"].fields
+                self.assertEqual(fields[0].value, "1/50")
+                self.assertEqual(fields[1].value, f"1/{bot_module.DAILY_LIMIT}")
+                token_fields = {field.name: field.value for field in fields}
+                self.assertIn("Total: 15", token_fields["Your Tokens"])
+                self.assertIn("Total: 15", token_fields["Global Tokens"])
+
+    async def test_token_stats_aggregate_users_and_models_without_double_counting(self):
+        gemini = bot_module.AIResponse("private answer", "Gemini", "gemini-test", SimpleNamespace(
+            prompt_token_count=100, candidates_token_count=20, total_token_count=150,
+            cached_content_token_count=40, thoughts_token_count=30,
+        ))
+        groq = bot_module.AIResponse("answer", "Groq", "groq-test", SimpleNamespace(
+            prompt_tokens=50, completion_tokens=10, total_tokens=60,
+        ))
+        self.cog._track_ai_usage(42, gemini)
+        self.cog._track_ai_usage(99, groq)
+        self.cog._track_ai_usage(42, bot_module.AIResponse("missing", "Gemini", "gemini-test"))
+        await self.cog._aistats.callback(self.cog, self.ctx)
+
+        fields = {field.name: field.value for field in self.ctx.send.await_args.kwargs["embed"].fields}
+        self.assertIn("Input: 100 (1/2 responses reported)", fields["Your Tokens"])
+        self.assertIn("Total: 210 (2/3 responses reported)", fields["Global Tokens"])
+        self.assertIn("Cached: 40", fields["Global Tokens"])
+        self.assertIn("Reasoning: 30", fields["Global Tokens"])
+        self.assertIn("Gemini / gemini-test", fields)
+        self.assertIn("Groq / groq-test", fields)
+        self.assertNotIn("private answer", str(bot_module.AI_TOKEN_USAGE))
+
+    def test_token_usage_rolls_over_and_missing_is_not_zero(self):
+        bot_module.AI_TOKEN_USAGE["old"] = {42: []}
+        self.cog._track_ai_usage(42, bot_module.AIResponse("answer", "Groq", "test"))
+        self.assertNotIn("old", bot_module.AI_TOKEN_USAGE)
+        records = bot_module.AI_TOKEN_USAGE[bot_module.datetime.now().date()][42]
+        self.assertIn("Total: unreported", self.cog._format_token_usage(records))
+        zero = bot_module.AIResponse("", "Groq", "test", SimpleNamespace(total_tokens=0))
+        self.assertEqual(zero.tokens["total"], 0)
+
+    async def test_ask_is_unmodified_out_of_character_and_available_during_playback(self):
+        self.ctx.voice_state.current = SimpleNamespace(source=SimpleNamespace(title="Private track"))
+        question = "Act as a history teacher and explain medieval trade."
+        for response in ("A direct answer.", "x" * 2000):
+            with self.subTest(length=len(response)), patch.object(
+                bot_module, "gemini_model", "gemini-test"
+            ), patch.object(self.cog, "_ai_quota_check", return_value=False), patch.object(
+                bot_module, "generate_content", return_value=response
+            ) as generate:
+                self.ctx.send.reset_mock()
+                await self.cog._ask.callback(self.cog, self.ctx, question=question)
+
+                generate.assert_called_once_with(question)
+                messages = [call.args[0] for call in self.ctx.send.await_args_list]
+                self.assertIn("out of character", messages[0])
+                self.assertIn("Gemini / Groq", messages[0])
+                self.assertNotIn("Joe Barden", "".join(messages[1:]))
+                self.assertIn(response[:1900], messages[1])
+
+    async def test_bard_uses_current_track_not_queue_during_playback(self):
+        self.ctx.voice_state.current = SimpleNamespace(source=SimpleNamespace(
+            title="Metallica - One", uploader="Metallica", data={"artist": "Metallica", "genre": "Metal"}
+        ))
+        self.ctx.voice_state.songs = [SimpleNamespace(source=SimpleNamespace(title="Unrelated queued song"))]
+        with patch.object(bot_module, "gemini_model", "gemini-test"), patch.object(
+            self.cog, "_ai_quota_check", return_value=False
+        ), patch.object(bot_module, "generate_content", return_value="A short ramble.") as generate:
+            await self.cog._bard.callback(self.cog, self.ctx, request="queue more music like this!")
+
+        generate.assert_called_once()
+        prompt, system_prompt = generate.call_args.args
+        self.assertIn("Metallica - One", prompt)
+        self.assertIn('"artist_or_uploader": "Metallica"', prompt)
+        self.assertIn('"genre": "Metal"', prompt)
+        self.assertNotIn("Unrelated queued song", prompt)
+        self.assertIn("under 100 words", prompt)
+        self.assertIn("Joe Biden", system_prompt)
+
+    def test_music_context_handles_missing_metadata_and_bounds_titles(self):
+        self.assertEqual(self.cog._get_music_context(self.ctx), "No track is currently playing.")
+        self.ctx.voice_state.current = SimpleNamespace(source=SimpleNamespace(title="x" * 1000))
+        context = self.cog._get_music_context(self.ctx)
+        self.assertIn("x" * 200, context)
+        self.assertNotIn("x" * 201, context)
+        self.assertNotIn("artist_or_uploader", context)
+
+    async def test_queue_format_is_requested_only_by_bard(self):
+        with patch.object(bot_module, "gemini_model", "gemini-test"), patch.object(
+            self.cog, "_ai_quota_check", return_value=False
+        ), patch.object(self.cog, "_is_music_active", return_value=False), patch.object(
+            bot_module, "generate_content", return_value="Some music for you."
+        ) as generate:
+            await self.cog._bard.callback(self.cog, self.ctx, request="tavern songs")
+
+        generate.assert_called_once()
+        prompt, system_prompt = generate.call_args.args
+        self.assertIn("QUEUE_SONGS:song1|song2|song3", prompt)
+        self.assertIn("separated by |", prompt)
+        self.assertNotIn("QUEUE_SONGS", system_prompt)
+
+    async def test_canned_roasts_do_not_count_as_ai_usage(self):
+        for gemini, quota in ((None, False), ("gemini-test", True)):
+            with self.subTest(gemini=gemini, quota=quota), patch.object(
+                bot_module, "gemini_model", gemini
+            ), patch.object(bot_module, "_groq_client", None), patch.object(
+                self.cog, "_ai_quota_check", return_value=quota
+            ), patch.object(bot_module, "generate_content") as generate:
+                await self.cog._roastdj.callback(self.cog, self.ctx)
+
+                generate.assert_not_called()
+                self.assertEqual(bot_module.AI_USAGE, {})
+
+    async def test_failed_ai_roasts_do_not_count_as_successful_usage(self):
+        for error in (bot_module.GeminiQuotaError("quota"), RuntimeError("failed")):
+            with self.subTest(error=type(error).__name__), patch.object(
+                bot_module, "gemini_model", "gemini-test"
+            ), patch.object(bot_module, "_groq_client", None), patch.object(
+                self.cog, "_ai_quota_check", return_value=False
+            ), patch.object(bot_module, "generate_content", side_effect=error), patch.object(
+                bot_module, "log_error"
+            ):
+                await self.cog._roastdj.callback(self.cog, self.ctx)
+
+                self.assertEqual(bot_module.AI_USAGE, {})
+
+
 class AiFallbackTests(unittest.TestCase):
+    def test_gemini_response_preserves_usage_metadata(self):
+        client = Mock()
+        client.models.generate_content.return_value = SimpleNamespace(
+            text="Gemini answer", usage_metadata=SimpleNamespace(
+                prompt_token_count=12, candidates_token_count=8, total_token_count=25,
+                cached_content_token_count=4, thoughts_token_count=5,
+            )
+        )
+        with patch.object(bot_module, "client", client), patch.object(
+            bot_module, "gemini_model", "gemini-test"
+        ), patch.object(bot_module, "available_models", []):
+            result = bot_module.generate_content("hello")
+
+        self.assertEqual(result, "Gemini answer")
+        self.assertEqual(result.provider, "Gemini")
+        self.assertEqual(result.tokens, {"input": 12, "output": 8, "total": 25, "cached": 4, "reasoning": 5})
+
+    def test_fallback_returns_groq_usage_without_estimated_gemini_tokens(self):
+        client = Mock()
+        client.chat.completions.create.return_value = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="Groq answer"))],
+            usage=SimpleNamespace(prompt_tokens=10, completion_tokens=7, total_tokens=17,
+                prompt_tokens_details=SimpleNamespace(cached_tokens=3),
+                completion_tokens_details=SimpleNamespace(reasoning_tokens=2)),
+        )
+        with patch.object(bot_module, "client", object()), patch.object(
+            bot_module, "gemini_model", "gemini-test"
+        ), patch.object(bot_module, "_groq_client", client), patch.object(
+            bot_module, "_GROQ_MODELS", ["groq-test"]
+        ), patch.object(bot_module, "generate_content_with_fallback", side_effect=bot_module.GeminiQuotaError("quota")), patch.object(
+            bot_module, "log_error"
+        ):
+            result = bot_module.generate_content("hello")
+
+        self.assertEqual(result, "Groq answer")
+        self.assertEqual(result.provider, "Groq")
+        self.assertEqual(result.model, "groq-test")
+        self.assertEqual(result.tokens, {"input": 10, "output": 7, "total": 17, "cached": 3, "reasoning": 2})
+
     def test_groq_handles_gemini_quota(self):
         with patch.object(bot_module, "client", object()), patch.object(
             bot_module, "gemini_model", "gemini-test"
